@@ -6,17 +6,18 @@ import { buildTranslatePrompt, type GlossaryEntry } from "@/lib/ai/prompts";
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  const {
-    text,
-    glossary = [],
-    style = "fluent",
-    provider,
-  }: {
+  let parsed: {
     text: string;
     glossary?: GlossaryEntry[];
     style?: "literal" | "fluent" | "webnovel";
     provider?: "qwen" | "deepseek" | "custom";
-  } = await req.json();
+  };
+  try {
+    parsed = await req.json();
+  } catch {
+    return new Response(JSON.stringify({ error: "请求体不是合法 JSON" }), { status: 400 });
+  }
+  const { text, glossary = [], style = "fluent", provider } = parsed;
 
   if (!text?.trim()) {
     return new Response(JSON.stringify({ error: "缺少 text" }), { status: 400 });
