@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+/* ── Kreader 主题变量（默认：和纸 paper）。切 data-theme 即换主题。 ── */
+:root,
+[data-theme="paper"] {
+  --app: #e8e0ce;
+  --page: #fbf6ea;
+  --ink: #2a241c;
+  --ink2: #8a7e69;
+  --line: #e2d8c2;
+  --acc: #b23a2a;
+  --soft: #f4eddc;
+}
+
+[data-theme="night"] {
+  --app: #13151b;
+  --page: #1f222a;
+  --ink: #d9d2c2;
+  --ink2: #8e8a7c;
+  --line: #343843;
+  --acc: #d07a52;
+  --soft: #272b34;
+}
+
+[data-theme="matcha"] {
+  --app: #dce3d0;
+  --page: #f4f7ea;
+  --ink: #2c3324;
+  --ink2: #75805f;
+  --line: #d5dcbf;
+  --acc: #5f7d3f;
+  --soft: #eaf0da;
+}
+
+@theme inline {
+  --color-app: var(--app);
+  --color-page: var(--page);
+  --color-ink: var(--ink);
+  --color-ink2: var(--ink2);
+  --color-line: var(--line);
+  --color-acc: var(--acc);
+  --color-soft: var(--soft);
+  --font-mincho: "Shippori Mincho", serif;
+  --font-serif: "Noto Serif SC", serif;
+}
+
+body {
+  background: var(--app);
+  color: var(--ink);
+  font-family: "Noto Serif SC", serif;
+}
+
+::selection {
+  background: rgba(178, 58, 42, 0.18);
+}

@@ -1,0 +1,75 @@
+// Kreader 数据模型
+// 段落级粒度是关键：防剧透 AI 只能引用 readingProgress 之前的 Paragraph。
+// 默认 SQLite（开箱即用）。上生产换 Postgres：把 provider 改成 "postgresql" 即可。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Book {
+  id        String   @id @default(cuid())
+  title     String
+  author    String?
+  language  String   @default("ja") // ja / zh / en …
+  format    String   @default("epub") // epub / txt
+  coverPath String?
+  series    String? // 系列归组，如「月影のレールウェイ · 全3巻」
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  chapters  Chapter[]
+  glossary  GlossaryTerm[]
+  progress  ReadingProgress?
+}
+
+model Chapter {
+  id      String  @id @default(cuid())
+  bookId  String
+  index   Int // 章序，从 0 开始
+  title   String
+  book    Book    @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  paragraphs Paragraph[]
+
+  @@unique([bookId, index])
+  @@index([bookId])
+}
+
+model Paragraph {
+  id          String  @id @default(cuid())
+  chapterId   String
+  globalIndex Int // 全书段落序号 —— 防剧透判断的核心
+  text        String // 原文
+  translation String? // 缓存的译文（按术语表生成）
+  chapter     Chapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+
+  @@index([chapterId])
+  @@index([globalIndex])
+}
+
+// AI 自动抽取的术语表，保证「アスナ」全书译名一致
+model GlossaryTerm {
+  id        String  @id @default(cuid())
+  bookId    String
+  source    String // 原文词，如 アスナ
+  target    String // 锁定译名，如 亚丝娜
+  kind      String  @default("name") // name / place / skill / org …
+  book      Book    @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([bookId, source])
+  @@index([bookId])
+}
+
+model ReadingProgress {
+  id           String   @id @default(cuid())
+  bookId       String   @unique
+  paragraphIdx Int      @default(0) // 已读到的全书段落序号（防剧透上界）
+  percent      Float    @default(0)
+  updatedAt    DateTime @updatedAt
+  book         Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+}

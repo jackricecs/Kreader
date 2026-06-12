@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kreader · 设计理念</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --app:#E8E0CE; --page:#FBF6EA; --ink:#2A241C; --ink2:#8A7E69;
+    --line:#E2D8C2; --acc:#B23A2A; --soft:#F4EDDC;
+    --mincho:'Shippori Mincho',serif; --serif:'Noto Serif SC',serif; --mono:'JetBrains Mono',monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--app); color:var(--ink); font-family:var(--serif);
+    line-height:1.9; -webkit-font-smoothing:antialiased;
+    background-image:
+      radial-gradient(120% 80% at 80% -10%, rgba(178,58,42,0.05), transparent 60%),
+      radial-gradient(100% 60% at 0% 0%, rgba(39,53,79,0.05), transparent 55%);
+  }
+  ::selection{background:rgba(178,58,42,0.18)}
+  a{color:var(--acc);text-decoration:none}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 32px}
+  .vt{writing-mode:vertical-rl;font-family:var(--mincho);letter-spacing:6px}
+
+  /* ── top bar ── */
+  header.bar{
+    position:sticky;top:0;z-index:50;height:60px;display:flex;align-items:center;
+    justify-content:space-between;backdrop-filter:saturate(1.2) blur(8px);
+    background:rgba(232,224,206,0.82);border-bottom:1px solid var(--line)
+  }
+  .logo{display:flex;align-items:center;gap:12px;user-select:none}
+  .mark{width:34px;height:34px;border-radius:8px;background:var(--acc);display:flex;
+    align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(178,58,42,0.4)}
+  .mark span{color:#FBF6EA;font-family:var(--mincho);font-size:18px;font-weight:700}
+  .logo .t1{font-size:15px;font-weight:700;letter-spacing:1.5px}
+  .logo .t2{font-size:10px;color:var(--ink2);letter-spacing:3px}
+  nav.toc{display:flex;gap:22px;font-size:12.5px;color:var(--ink2);letter-spacing:1px}
+  nav.toc a{color:var(--ink2)} nav.toc a:hover{color:var(--acc)}
+
+  /* ── hero ── */
+  .hero{position:relative;padding:96px 0 72px;overflow:hidden}
+  .hero .kana{position:absolute;right:-10px;top:30px;font-size:240px;line-height:1;
+    color:var(--acc);opacity:0.06;font-family:var(--mincho);font-weight:700;pointer-events:none}
+  .eyebrow{font-size:11px;font-weight:700;letter-spacing:4px;color:var(--acc)}
+  .hero h1{font-family:var(--mincho);font-size:54px;font-weight:600;letter-spacing:3px;margin:14px 0 6px}
+  .hero .sub{font-size:16px;color:var(--ink2);max-width:620px}
+  .hero .lead{margin-top:26px;font-size:15px;max-width:680px;line-height:2.1}
+  .rule{width:46px;height:3px;background:var(--acc);margin:22px 0}
+  .pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:28px}
+  .pill{font-size:12px;letter-spacing:1px;padding:6px 14px;border-radius:999px;
+    background:var(--page);border:1px solid var(--line);color:var(--ink2)}
+  .pill.solid{background:var(--acc);color:#FBF6EA;border-color:var(--acc)}
+
+  /* ── section scaffold ── */
+  section{padding:64px 0;border-top:1px solid var(--line)}
+  .sec-head{display:flex;align-items:baseline;gap:16px;margin-bottom:8px}
+  .sec-no{font-family:var(--mono);font-size:12px;color:var(--acc);letter-spacing:2px}
+  .sec-head h2{font-family:var(--mincho);font-size:30px;font-weight:600;letter-spacing:2px;margin:0}
+  .sec-sub{font-size:14px;color:var(--ink2);margin:0 0 36px;max-width:640px;line-height:2}
+
+  .grid{display:grid;gap:20px}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  @media(max-width:860px){.g2,.g3{grid-template-columns:1fr}.hero h1{font-size:40px}nav.toc{display:none}}
+
+  .card{background:var(--page);border:1px solid var(--line);border-radius:14px;padding:22px 24px;
+    box-shadow:0 14px 36px -22px rgba(50,35,15,0.3)}
+  .card h3{font-family:var(--mincho);font-size:18px;font-weight:600;margin:0 0 8px;letter-spacing:1px}
+  .card p{font-size:13.5px;color:var(--ink2);margin:0;line-height:2}
+  .card .idx{font-family:var(--mono);font-size:11px;color:var(--acc);letter-spacing:2px;display:block;margin-bottom:10px}
+  .card .jp{font-family:var(--mincho);color:var(--ink);font-size:13px}
+
+  /* principle cards w/ vertical kana */
+  .principle{position:relative;overflow:hidden}
+  .principle .vt{position:absolute;right:16px;top:18px;font-size:22px;color:var(--acc);opacity:0.14}
+
+  /* ── themes strip ── */
+  .themes{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .theme{border-radius:14px;overflow:hidden;border:1px solid var(--line)}
+  .theme .swatch{height:118px;display:flex;align-items:flex-end;justify-content:space-between;padding:14px}
+  .theme .name{font-family:var(--mincho);font-size:14px;letter-spacing:2px}
+  .theme .dots{display:flex;gap:6px}
+  .theme .dot{width:16px;height:16px;border-radius:999px;border:1px solid rgba(0,0,0,0.08)}
+  .theme .meta{background:var(--page);padding:11px 14px;font-size:11px;color:var(--ink2);font-family:var(--mono);letter-spacing:0.5px}
+
+  /* feature layers */
+  .layer{display:flex;gap:18px;align-items:flex-start;padding:18px 0;border-bottom:1px dashed var(--line)}
+  .layer:last-child{border-bottom:none}
+  .layer .tag{flex:none;width:128px;font-family:var(--mincho);font-size:15px;font-weight:600;letter-spacing:1px}
+  .layer .tag small{display:block;font-family:var(--mono);font-size:10px;color:var(--acc);letter-spacing:2px;font-weight:400;margin-top:4px}
+  .layer .items{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{font-size:12px;padding:6px 12px;border-radius:8px;background:var(--soft);border:1px solid var(--line);color:var(--ink)}
+  .chip b{color:var(--acc);font-weight:600}
+
+  /* architecture */
+  .arch{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border:1px solid var(--line);
+    border-radius:14px;overflow:hidden;background:var(--page)}
+  .arch .col{padding:20px;border-right:1px solid var(--line)}
+  .arch .col:last-child{border-right:none}
+  .arch .col h4{font-family:var(--mono);font-size:11px;letter-spacing:2px;color:var(--acc);margin:0 0 14px;text-transform:uppercase}
+  .node{background:var(--soft);border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin-bottom:10px}
+  .node .nm{font-size:13px;font-weight:600;font-family:var(--mincho)}
+  .node .ds{font-size:11px;color:var(--ink2);margin-top:3px;line-height:1.7}
+  @media(max-width:860px){.arch{grid-template-columns:1fr}.arch .col{border-right:none;border-bottom:1px solid var(--line)}}
+
+  /* code block */
+  .code{background:#1F222A;border-radius:14px;padding:22px 24px;overflow:auto;
+    font-family:var(--mono);font-size:12.5px;line-height:1.85;color:#D9D2C2;border:1px solid #343843}
+  .code .c{color:#8E8A7C} .code .k{color:#D07A52} .code .s{color:#9DB89A} .code .p{color:#C9A8E0}
+
+  /* provider config mock */
+  .provs{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+  .prov{background:var(--page);border:1px solid var(--line);border-radius:12px;padding:16px 18px;position:relative}
+  .prov.active{border-color:var(--acc);box-shadow:0 0 0 3px rgba(178,58,42,0.08)}
+  .prov .row1{display:flex;align-items:center;gap:10px}
+  .prov .badge{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+    font-family:var(--mincho);font-weight:700;color:#fff;font-size:13px}
+  .prov .pn{font-size:14px;font-weight:600}
+  .prov .pm{font-size:11px;color:var(--ink2);font-family:var(--mono)}
+  .prov .on{margin-left:auto;font-size:10px;color:var(--acc);border:1px solid var(--acc);border-radius:999px;padding:2px 9px;letter-spacing:1px}
+  .prov .meta{margin-top:12px;display:flex;gap:6px;flex-wrap:wrap}
+  .prov .m{font-size:10.5px;color:var(--ink2);background:var(--soft);border:1px solid var(--line);border-radius:5px;padding:3px 8px}
+
+  footer{padding:56px 0 70px;border-top:1px solid var(--line);text-align:center;color:var(--ink2);font-size:12px;letter-spacing:1px}
+  footer .big{font-family:var(--mincho);font-size:20px;color:var(--ink);letter-spacing:4px;margin-bottom:10px}
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:0 32px">
+    <div class="logo">
+      <div class="mark"><span>読</span></div>
+      <div>
+        <div class="t1">Kreader</div>
+        <div class="t2">轻小说阅读器 · 设计理念</div>
+      </div>
+    </div>
+    <nav class="toc">
+      <a href="#why">缘起</a>
+      <a href="#principles">设计原则</a>
+      <a href="#visual">视觉语言</a>
+      <a href="#features">功能分层</a>
+      <a href="#arch">技术架构</a>
+      <a href="#ai">AI 接入</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ───────── HERO ───────── -->
+<div class="hero">
+  <div class="wrap" style="position:relative">
+    <div class="kana">読</div>
+    <div class="eyebrow">KREADER · 设计理念书</div>
+    <h1>把读轻小说<br>做成一件爽的事</h1>
+    <div class="sub">一个以「和纸质感 + 日系美学 + 防剧透 AI」为内核的沉浸式阅读器。</div>
+    <div class="rule"></div>
+    <p class="lead">
+      Kreader 不是又一个 Calibre。它假设你的读者是在深夜、宽屏、想被一本日文轻小说带走的人——
+      所以每一处设计都服务于<strong>「沉浸」</strong>与<strong>「无痛续读」</strong>：纸感双页书卷、原生振假名排版、
+      点词即查、术语表记忆，以及一整套<strong>只基于「你已读到哪里」</strong>的 AI 阅读助手。
+      下面这份文档讲清楚它为什么长这样，以及它在工程上如何落地为一套可前后端分离、可自由切换 AI 模型（QWEN / DeepSeek）的系统。
+    </p>
+    <div class="pills">
+      <span class="pill solid">沉浸式纸感</span>
+      <span class="pill">防剧透优先</span>
+      <span class="pill">日文排版一等公民</span>
+      <span class="pill">EPUB / TXT 导入</span>
+      <span class="pill">模型可插拔 · QWEN / DeepSeek</span>
+      <span class="pill">Next.js · 前后端可分离</span>
+    </div>
+  </div>
+</div>
+
+<!-- ───────── WHY ───────── -->
+<section id="why">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">01</span><h2>缘起 · 为谁而做</h2></div>
+    <p class="sec-sub">机翻轻小说最痛的从来不是「翻不出来」，而是<strong>体验割裂</strong>：术语全书前后不一、断章后忘了前情、想查个词要切到字典 App、读到一半被搜索引擎剧透。Kreader 把这些痛点逐一拆掉。</p>
+    <div class="grid g3">
+      <div class="card">
+        <span class="idx">PAIN 01</span>
+        <h3>术语漂移</h3>
+        <p>同一个「アスナ」这一章译亚丝娜、下一章译阿斯娜。Kreader 用 <span class="jp">AI 术语表</span>锁定角色名 / 地名 / 必杀技，全书一致。</p>
+      </div>
+      <div class="card">
+        <span class="idx">PAIN 02</span>
+        <h3>断章失忆</h3>
+        <p>搁置两周再打开，不知道读到哪了。<span class="jp">前情提要</span>基于你已读的页数生成「上回说到…」，绝不带出未读剧情。</p>
+      </div>
+      <div class="card">
+        <span class="idx">PAIN 03</span>
+        <h3>查词出戏</h3>
+        <p>点任意日语词即弹词卡：假名、罗马音、JLPT 等级、本书出现次数，一键进生词本——不离开书页。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── PRINCIPLES ───────── -->
+<section id="principles">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">02</span><h2>四条设计原则</h2></div>
+    <p class="sec-sub">这四条是 Kreader 在任何取舍时刻的判据。当「好看」和「好用」冲突，按它们排序。</p>
+    <div class="grid g2">
+      <div class="card principle">
+        <span class="vt">沈</span>
+        <span class="idx">PRINCIPLE 一</span>
+        <h3>沉浸高于功能堆叠</h3>
+        <p>默认界面是一本摊开的书，不是一个控制台。和纸底色、明朝体、书脊阴影、翻页动画——技术感让位于纸感。所有工具栏都可隐去，只剩书与你。</p>
+      </div>
+      <div class="card principle">
+        <span class="vt">防</span>
+        <span class="idx">PRINCIPLE 二</span>
+        <h3>防剧透是底线，不是选项</h3>
+        <p>人物图谱、世界观百科、问答、情绪曲线——<strong>一切 AI 输出只能引用你已读到的位置</strong>。未读内容在 UI 上以「？？？」「🔒 读至第 N 章解锁」呈现。问「他最后怎么了」会被礼貌拦截。</p>
+      </div>
+      <div class="card principle">
+        <span class="vt">和</span>
+        <span class="idx">PRINCIPLE 三</span>
+        <h3>日文排版是一等公民</h3>
+        <p>原生 <span class="jp">&lt;ruby&gt;</span> 振假名渲染、禁则处理、未来的竖排右→左。中日双语对照以段落级交错呈现，学日语的人点一段才展开译文。</p>
+      </div>
+      <div class="card principle">
+        <span class="vt">渐</span>
+        <span class="idx">PRINCIPLE 四</span>
+        <h3>随进度生长</h3>
+        <p>图谱节点、百科词条、情绪曲线都随阅读进度「长出来」。已读 5% 时助手只懂 5%。这既是防剧透，也让陪伴感真实——它和你一起读。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── VISUAL ───────── -->
+<section id="visual">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">03</span><h2>视觉语言</h2></div>
+    <p class="sec-sub">从 Scen-Mes 工程控制台美学，转向<strong>和纸 × 明朝体 × 朱红</strong>的日系沉浸风。三套主题覆盖昼 / 夜 / 护眼三种阅读情境。</p>
+
+    <div class="themes">
+      <div class="theme">
+        <div class="swatch" style="background:#FBF6EA">
+          <span class="name" style="color:#2A241C">和纸</span>
+          <span class="dots">
+            <span class="dot" style="background:#2A241C"></span>
+            <span class="dot" style="background:#B23A2A"></span>
+            <span class="dot" style="background:#F4EDDC"></span>
+          </span>
+        </div>
+        <div class="meta">paper · #FBF6EA / #2A241C / acc #B23A2A</div>
+      </div>
+      <div class="theme">
+        <div class="swatch" style="background:#1F222A">
+          <span class="name" style="color:#D9D2C2">夜空</span>
+          <span class="dots">
+            <span class="dot" style="background:#D9D2C2"></span>
+            <span class="dot" style="background:#D07A52"></span>
+            <span class="dot" style="background:#272B34"></span>
+          </span>
+        </div>
+        <div class="meta">night · #1F222A / #D9D2C2 / acc #D07A52</div>
+      </div>
+      <div class="theme">
+        <div class="swatch" style="background:#F4F7EA">
+          <span class="name" style="color:#2C3324">抹茶</span>
+          <span class="dots">
+            <span class="dot" style="background:#2C3324"></span>
+            <span class="dot" style="background:#5F7D3F"></span>
+            <span class="dot" style="background:#EAF0DA"></span>
+          </span>
+        </div>
+        <div class="meta">matcha · #F4F7EA / #2C3324 / acc #5F7D3F</div>
+      </div>
+    </div>
+
+    <div class="grid g2" style="margin-top:22px">
+      <div class="card">
+        <span class="idx">TYPOGRAPHY</span>
+        <h3>双明朝体系统</h3>
+        <p style="font-family:var(--mincho);font-size:20px;color:var(--ink);line-height:1.6;margin-bottom:6px">銀河鉄道の夜 — Shippori Mincho</p>
+        <p style="font-size:18px;color:var(--ink);line-height:1.6;margin-bottom:10px">银河铁道之夜 — Noto Serif SC</p>
+        <p>日文正文用 Shippori Mincho 撑起明朝竖钩的书卷气；中译与 UI 用 Noto Serif SC 衔接。等宽 JetBrains Mono 仅用于代码 / 数据。</p>
+      </div>
+      <div class="card">
+        <span class="idx">MOTIF</span>
+        <h3>纸感的细节</h3>
+        <p>书页有三层堆叠投影模拟厚度；中缝一道渐变阴影还原书脊；翻页用 <span class="jp">cubic-bezier(.22,.61,.36,1)</span> 的缓动。「氛围模式」会按章节情绪渲染星夜微光与环境音——这是通往 Fable 式沉浸上限的入口。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── FEATURES ───────── -->
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">04</span><h2>功能分层</h2></div>
+    <p class="sec-sub">从「读得了」到「读得爽」，四层逐级递进。基础层必须扎实，上限层负责惊艳。</p>
+    <div class="card" style="padding:8px 24px">
+      <div class="layer">
+        <div class="tag">基础层<small>FOUNDATION</small></div>
+        <div class="items">
+          <span class="chip">EPUB / TXT 解析</span>
+          <span class="chip">TXT 智能分章</span>
+          <span class="chip">封面墙 · 系列归组</span>
+          <span class="chip">阅读进度 · 续读</span>
+          <span class="chip">字号 / 行距 / 三主题</span>
+          <span class="chip">翻页 / 滚动可切换</span>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="tag">翻译层<small>TRANSLATION</small></div>
+        <div class="items">
+          <span class="chip">双语对照</span>
+          <span class="chip">点词即查 · JLPT</span>
+          <span class="chip"><b>术语表记忆</b></span>
+          <span class="chip">译风选择 · 直译/意译/网文腔</span>
+          <span class="chip">一键自动注音</span>
+          <span class="chip">生词本</span>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="tag">AI 助手层<small>READING&nbsp;AI</small></div>
+        <div class="items">
+          <span class="chip"><b>人物关系图谱</b> · 防剧透</span>
+          <span class="chip">前情提要 recap</span>
+          <span class="chip">剧透安全问答</span>
+          <span class="chip">世界观百科</span>
+          <span class="chip">情绪曲线 · 名场面</span>
+          <span class="chip">分角色 AI 朗读</span>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="tag">上限层<small>CEILING</small></div>
+        <div class="items">
+          <span class="chip">3D 书房 / 书架</span>
+          <span class="chip">情绪氛围 · 环境音</span>
+          <span class="chip">AI 名场面插画</span>
+          <span class="chip">视觉小说模式 · 立绘对话</span>
+          <span class="chip">年度阅读报告</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────── ARCHITECTURE ───────── -->
+<section id="arch">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">05</span><h2>技术架构</h2></div>
+    <p class="sec-sub">一套 <strong>Next.js（App Router）</strong> 应用，前后端可分离：UI 是 React Server / Client Components，所有重活（解析、AI、存储）收敛到 Route Handlers，因此换前端、换部署形态都不动核心逻辑。</p>
+
+    <div class="arch">
+      <div class="col">
+        <h4>① 前端 / Reader</h4>
+        <div class="node"><div class="nm">书库 · 阅读视图</div><div class="ds">RSC 渲染书架；阅读器为 Client Component，承载翻页 / 查词 / 助手面板。</div></div>
+        <div class="node"><div class="nm">主题 & 排版引擎</div><div class="ds">CSS 变量驱动三主题；&lt;ruby&gt; 振假名、竖排预留。</div></div>
+        <div class="node"><div class="nm">本地状态</div><div class="ds">阅读进度、生词本、设置先落 IndexedDB，可选云同步。</div></div>
+      </div>
+      <div class="col">
+        <h4>② 服务端 / API</h4>
+        <div class="node"><div class="nm">/api/books · import</div><div class="ds">上传 EPUB/TXT → 解析 → 入库；支持批量导入一组文件。</div></div>
+        <div class="node"><div class="nm">EPUB / TXT Pipeline</div><div class="ds">epub.js 解目录与章节，TXT 正则智能分章（「第〇章」「序章」）。</div></div>
+        <div class="node"><div class="nm">/api/ai/* · 流式</div><div class="ds">翻译 / 问答 / 提要统一走 Provider 抽象层，SSE 流式返回。</div></div>
+      </div>
+      <div class="col">
+        <h4>③ 数据 & 模型</h4>
+        <div class="node"><div class="nm">Book / Chapter / Para</div><div class="ds">SQLite / Postgres + Prisma；段落级粒度，便于定位「已读到哪」。</div></div>
+        <div class="node"><div class="nm">Glossary · 术语表</div><div class="ds">每本书一张术语表，翻译时注入 prompt 保证全书一致。</div></div>
+        <div class="node"><div class="nm">AI Provider 抽象</div><div class="ds">QWEN / DeepSeek / 自定义 OpenAI 兼容端点，可热切换。</div></div>
+      </div>
+    </div>
+
+    <p class="sec-sub" style="margin-top:30px">导入流程一条线：</p>
+    <div class="code"><span class="c">// app/api/books/import/route.ts —— 单本 / 批量皆走此入口</span>
+<span class="k">export async function</span> POST(req: Request) {
+  <span class="k">const</span> files = <span class="k">await</span> req.formData()        <span class="c">// 一个或多个 epub/txt</span>
+  <span class="k">const</span> books = []
+  <span class="k">for</span> (<span class="k">const</span> file <span class="k">of</span> files.getAll(<span class="s">'files'</span>)) {
+    <span class="k">const</span> parsed = file.name.endsWith(<span class="s">'.epub'</span>)
+      ? <span class="k">await</span> parseEpub(file)         <span class="c">// 目录树 · 封面 · 章节 · 元数据</span>
+      : <span class="k">await</span> parseTxt(file)          <span class="c">// 智能分章 + 语言探测</span>
+    books.push(<span class="k">await</span> db.book.create({ data: parsed }))
+  }
+  <span class="k">return</span> Response.json({ books })   <span class="c">// 也支持「新建空书」手动粘贴正文</span>
+}</div>
+  </div>
+</section>
+
+<!-- ───────── AI ───────── -->
+<section id="ai">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-no">06</span><h2>AI 接入 · 模型可插拔</h2></div>
+    <p class="sec-sub">客户在中国大陆，首选 <strong>通义千问 QWEN</strong> 与 <strong>DeepSeek</strong>。两者均提供 OpenAI 兼容接口，因此用一层统一 Provider 抽象即可在设置里自由切换、各功能独立配置（翻译用一个模型、问答用另一个）。</p>
+
+    <div class="provs">
+      <div class="prov active">
+        <div class="row1">
+          <div class="badge" style="background:#615CED">通</div>
+          <div>
+            <div class="pn">通义千问 QWEN <span class="on">默认 · 翻译</span></div>
+            <div class="pm">qwen-plus · dashscope compatible-mode</div>
+          </div>
+        </div>
+        <div class="meta">
+          <span class="m">中日翻译强</span>
+          <span class="m">长上下文</span>
+          <span class="m">流式 SSE</span>
+          <span class="m">术语表注入</span>
+        </div>
+      </div>
+      <div class="prov active">
+        <div class="row1">
+          <div class="badge" style="background:#4D6BFE">深</div>
+          <div>
+            <div class="pn">DeepSeek <span class="on">默认 · 问答/提要</span></div>
+            <div class="pm">deepseek-chat · api.deepseek.com</div>
+          </div>
+        </div>
+        <div class="meta">
+          <span class="m">推理性价比高</span>
+          <span class="m">防剧透 system prompt</span>
+          <span class="m">JSON 结构化输出</span>
+        </div>
+      </div>
+      <div class="prov">
+        <div class="row1">
+          <div class="badge" style="background:#10A37F">O</div>
+          <div>
+            <div class="pn">OpenAI 兼容端点</div>
+            <div class="pm">自定义 baseURL · 私有部署 / 其他厂商</div>
+          </div>
+        </div>
+        <div class="meta">
+          <span class="m">填 URL + Key 即用</span>
+          <span class="m">本地大模型</span>
+        </div>
+      </div>
+      <div class="prov">
+        <div class="row1">
+          <div class="badge" style="background:#B23A2A">＋</div>
+          <div>
+            <div class="pn">新增 Provider</div>
+            <div class="pm">在设置 → AI 模型中配置</div>
+          </div>
+        </div>
+        <div class="meta">
+          <span class="m">每功能可独立指派</span>
+          <span class="m">用量与成本可视</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="code" style="margin-top:24px"><span class="c">// lib/ai/provider.ts —— 一套接口，QWEN / DeepSeek 同形接入</span>
+<span class="k">interface</span> AIProvider {
+  id: <span class="s">'qwen'</span> | <span class="s">'deepseek'</span> | <span class="s">'custom'</span>
+  baseURL: <span class="k">string</span>      <span class="c">// 千问: dashscope .../compatible-mode/v1</span>
+  apiKey:  <span class="k">string</span>      <span class="c">// deepseek: https://api.deepseek.com</span>
+  model:   <span class="k">string</span>
+  chat(messages: Msg[], opts?: { stream?: <span class="k">boolean</span> }): AsyncIterable&lt;Token&gt;
+}
+
+<span class="c">// 各功能在设置里各指一个 provider，互不干扰</span>
+<span class="k">const</span> config = {
+  translate: <span class="p">'qwen-plus'</span>,        <span class="c">// 翻译 + 术语表</span>
+  qa:        <span class="p">'deepseek-chat'</span>,    <span class="c">// 剧透安全问答</span>
+  recap:     <span class="p">'deepseek-chat'</span>,    <span class="c">// 前情提要</span>
+}
+
+<span class="c">// 防剧透在服务端强约束：只把「已读段落」喂进上下文</span>
+<span class="k">const</span> ctx = paragraphs.filter(p =&gt; p.index &lt;= reader.progressIndex)</div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="big">読 · Kreader</div>
+    <div>设计理念书 · 沉浸式日系轻小说阅读器</div>
+    <div style="margin-top:8px;opacity:0.8">下一步：书库页 / 阅读页落地 → EPUB 导入管线 → QWEN &amp; DeepSeek 接入 → 防剧透助手</div>
+  </div>
+</footer>
+
+</body>
+</html>
