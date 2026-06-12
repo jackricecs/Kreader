@@ -57,6 +57,29 @@ export function buildQaPrompt(question: string, readContext: string): ChatMessag
   ];
 }
 
+/**
+ * TXT 智能分章：给模型一段「段落序号 + 段首预览」清单，
+ * 让它判断哪些段落是新章节的开头，并起标题。只回 JSON，便于服务端解析。
+ */
+export function buildSegmentPrompt(
+  items: { index: number; preview: string }[],
+): ChatMessage[] {
+  const list = items.map((it) => `[${it.index}] ${it.preview}`).join("\n");
+  return [
+    {
+      role: "system",
+      content:
+        "你是小说排版助手。下面是一篇没有分章的小说的连续段落，每行格式为「[全局序号] 段落开头预览」。" +
+        "请判断哪些段落是【新章节的开头】——通常是章节标题行（如「第N章」「序章」「○○之章」）、" +
+        "明显的时间/场景大转换，或独立成行的短标题。判定要克制，宁少勿多，普通段落不要当章节。" +
+        "\n只输出一个 JSON 数组，每个元素形如 {\"index\": 序号, \"title\": \"简短章节标题\"}，" +
+        "index 必须是上面出现过的序号，按升序。若这一段里没有任何新章节开头，输出空数组 []。" +
+        "不要输出 JSON 以外的任何文字、解释或代码块标记。",
+    },
+    { role: "user", content: list },
+  ];
+}
+
 /** 前情提要：同样只基于已读内容，分「最近一章 + 全局主线」。 */
 export function buildRecapPrompt(readContext: string): ChatMessage[] {
   return [

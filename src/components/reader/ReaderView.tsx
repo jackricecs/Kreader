@@ -2,8 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { THEMES, type ThemeId } from "@/lib/theme/tokens";
-import type { BookContent, Para, Seg } from "@/lib/reader/types";
+import type { BookContent, Para, Seg, SpreadSide } from "@/lib/reader/types";
+
+// 1–99 的中文数字，用于「第 N 章」眉标。
+const CN = "零一二三四五六七八九十";
+function cnNum(n: number): string {
+  if (n <= 10) return CN[n] ?? String(n);
+  if (n < 20) return "十" + CN[n - 10];
+  if (n < 100) return CN[Math.floor(n / 10)] + "十" + (n % 10 ? CN[n % 10] : "");
+  return String(n);
+}
 
 const LH_OPTS = [
   { v: 1.8, label: "紧" },
@@ -29,8 +39,10 @@ export default function ReaderView({
   initialTab?: string;
 }) {
   const { meta, paras, dict, spreads, toc, chars, nodes, edges, enc, qa, recap } = content;
+  const router = useRouter();
 
   const [spread, setSpread] = useState(0);
+  const [chaptering, setChaptering] = useState(false);
   const [animA, setAnimA] = useState(true);
   const [tab, setTab] = useState(initialTab && TABS.some((t) => t.id === initialTab) ? initialTab : "chars");
   const [biMode, setBiMode] = useState(false);
@@ -63,6 +75,33 @@ export default function ReaderView({
     setAnimA((a) => !a);
     setWc(null);
   }, []);
+  const goTo = useCallback((i: number) => {
+    setSpread(Math.max(0, Math.min(spreads.length - 1, i)));
+    setAnimA((a) => !a);
+    setWc(null);
+  }, [spreads.length]);
+
+  // 当前所在章：spread 落在哪个章的起始之后。
+  const curChapter = useMemo(() => {
+    let idx = -1;
+    toc.forEach((c, i) => { if (typeof c.spread === "number" && c.spread <= spread) idx = i; });
+    return idx;
+  }, [toc, spread]);
+
+  // TXT 等单章导入书：AI 智能分章后刷新页面重新分章。
+  const onAutoChapter = useCallback(async () => {
+    setChaptering(true);
+    try {
+      const res = await fetch(`/api/books/${meta.id}/autochapter`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? `${res.status}`);
+      router.refresh();
+    } catch (e) {
+      alert("智能分章失败：" + (e as Error).message);
+    } finally {
+      setChaptering(false);
+    }
+  }, [meta.id, router]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -202,6 +241,20 @@ export default function ReaderView({
     );
   };
 
+  // 章首大标题：导入书每章用自己的标题与章序，示例书回退到 meta。
+  const renderHead = (side: SpreadSide) => {
+    if (!side.head) return null;
+    const eyebrow = side.headNo ? `第 ${cnNum(side.headNo)} 章` : "第 一 章";
+    const title = side.headTitle ?? meta.chapterTitle;
+    return (
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontSize: 10, letterSpacing: 4, color: "var(--acc)", fontWeight: 700, marginBottom: 8 }}>{eyebrow}</div>
+        <div style={{ fontFamily: "var(--font-mincho)", fontSize: 26, fontWeight: 600, color: "var(--ink)", letterSpacing: 2 }}>{title}</div>
+        <div style={{ width: 42, height: 2, background: "var(--acc)", marginTop: 12 }} />
+      </div>
+    );
+  };
+
   const word = wc ? dict[wc.key] : null;
   const hasAI = nodes.length > 0;
 
@@ -288,14 +341,29 @@ export default function ReaderView({
             </div>
           </div>
           <div style={{ flex: 1, overflowY: "auto", padding: "12px 10px" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 3, color: "var(--ink2)", padding: "0 8px 8px 8px" }}>目次</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 8px 8px 8px" }}>
+              <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 3, color: "var(--ink2)" }}>目次</span>
+              {meta.fmt === "TXT" && toc.length <= 1 && (
+                <button onClick={onAutoChapter} disabled={chaptering} title="用 AI 把整篇无章节文本自动切分成章节" style={{ cursor: chaptering ? "default" : "pointer", fontFamily: "inherit", fontSize: 10, letterSpacing: 1, padding: "3px 8px", borderRadius: 6, border: "1px solid var(--acc)", background: "transparent", color: "var(--acc)", opacity: chaptering ? 0.6 : 1 }}>{chaptering ? "分章中…" : "AI 智能分章"}</button>
+              )}
+            </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {toc.map((ch, i) => (
-                <div key={i} title="演示原型：仅第一章可读" style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, padding: "7px 10px", borderRadius: 8, background: i === 0 ? "rgba(178,58,42,0.10)" : "transparent", cursor: "default" }}>
-                  <span style={{ fontFamily: "var(--font-mincho)", fontSize: 12, color: i === 0 ? "var(--acc)" : "var(--ink2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ch.label}</span>
-                  <span style={{ fontSize: 10, color: i === 0 ? "var(--acc)" : "var(--ink2)", flex: "none", fontVariantNumeric: "tabular-nums" }}>{i === 0 ? ch.meta : "未读"}</span>
-                </div>
-              ))}
+              {toc.map((ch, i) => {
+                const jumpable = typeof ch.spread === "number";
+                // 导入书按当前阅读位置高亮；示例书（无 spread）维持仅首章高亮的原型外观。
+                const active = jumpable ? i === curChapter : i === 0;
+                return (
+                  <div
+                    key={i}
+                    onClick={jumpable ? () => goTo(ch.spread!) : undefined}
+                    title={jumpable ? "跳转到本章" : "演示原型：仅第一章可读"}
+                    style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, padding: "7px 10px", borderRadius: 8, background: active ? "rgba(178,58,42,0.10)" : "transparent", cursor: jumpable ? "pointer" : "default" }}
+                  >
+                    <span style={{ fontFamily: "var(--font-mincho)", fontSize: 12, color: active ? "var(--acc)" : "var(--ink2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ch.label}</span>
+                    <span style={{ fontSize: 10, color: active ? "var(--acc)" : "var(--ink2)", flex: "none", fontVariantNumeric: "tabular-nums" }}>{jumpable ? (active ? "在读" : "") : i === 0 ? ch.meta : "未读"}</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
           <div style={{ flex: "none", borderTop: "1px solid var(--line)", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -318,13 +386,7 @@ export default function ReaderView({
 
                 {/* 左页 */}
                 <div style={{ flex: 1, minWidth: 0, padding: "42px 46px 30px 44px", display: "flex", flexDirection: "column", minHeight: 600 }}>
-                  {sp.l.head && (
-                    <div style={{ marginBottom: 28 }}>
-                      <div style={{ fontSize: 10, letterSpacing: 4, color: "var(--acc)", fontWeight: 700, marginBottom: 8 }}>第 一 章</div>
-                      <div style={{ fontFamily: "var(--font-mincho)", fontSize: 26, fontWeight: 600, color: "var(--ink)", letterSpacing: 2 }}>{meta.chapterTitle}</div>
-                      <div style={{ width: 42, height: 2, background: "var(--acc)", marginTop: 12 }} />
-                    </div>
-                  )}
+                  {renderHead(sp.l)}
                   <div style={{ flex: 1 }}>{sp.l.ps.map(renderPara)}</div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 18 }}>
                     <span style={{ fontSize: 11, color: "var(--ink2)", fontVariantNumeric: "tabular-nums" }}>{sp.l.no}</span>
@@ -334,6 +396,7 @@ export default function ReaderView({
 
                 {/* 右页 */}
                 <div style={{ flex: 1, minWidth: 0, padding: "42px 44px 30px 46px", display: "flex", flexDirection: "column", minHeight: 600 }}>
+                  {renderHead(sp.r)}
                   <div style={{ flex: 1 }}>
                     {sp.r.ps.map(renderPara)}
                     {sp.r.illus && (

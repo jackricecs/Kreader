@@ -19,6 +19,8 @@ export interface Para {
 export interface SpreadSide {
   no: number;
   head?: boolean; // 是否显示章首大标题
+  headTitle?: string; // 章首标题（导入书每章不同；示例书留空走 meta.chapterTitle）
+  headNo?: number; // 章序（1 起），用于「第 N 章」眉标
   ps: string[]; // 段落 id 列表
   illus?: boolean; // AI 插画概念位
 }
@@ -78,6 +80,7 @@ export interface QAEntry {
 export interface TocEntry {
   label: string;
   meta: string;
+  spread?: number; // 该章起始所在的跨页索引；有值才可点击跳转（导入书）
 }
 
 export interface ShelfBook {
