@@ -34,7 +34,12 @@ export async function POST(req: Request) {
           controller.enqueue(encoder.encode(token));
         }
       } catch (e) {
-        controller.enqueue(encoder.encode(`\n[翻译失败] ${(e as Error).message}`));
+        const err = e as Error & { cause?: { code?: string; message?: string } };
+        const cause = err.cause?.code ?? err.cause?.message ?? "";
+        console.error("[ai:translate] 调用失败:", err.message, err.cause ?? "");
+        controller.enqueue(
+          encoder.encode(`\n[翻译失败] ${err.message}${cause ? ` (${cause})` : ""}`),
+        );
       } finally {
         controller.close();
       }

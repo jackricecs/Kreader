@@ -8,6 +8,20 @@ import type {
   ProviderConfig,
 } from "./types";
 
+/** 判断是否为可重试的建连瞬时错误（连接超时 / 连接重置 / DNS 抖动）。 */
+function isTransientConnectError(e: unknown): boolean {
+  const codes = new Set([
+    "UND_ERR_CONNECT_TIMEOUT",
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ETIMEDOUT",
+    "EAI_AGAIN",
+    "ENETUNREACH",
+  ]);
+  const cause = (e as { cause?: { code?: string } })?.cause;
+  return Boolean(cause?.code && codes.has(cause.code));
+}
+
 export class OpenAICompatibleProvider implements AIProvider {
   constructor(public readonly config: ProviderConfig) {
     if (!config.apiKey) {
@@ -27,19 +41,48 @@ export class OpenAICompatibleProvider implements AIProvider {
     };
   }
 
+  /**
+   * 建连阶段的瞬时失败（连接超时 / 连接重置）做有限重试。
+   * 经 VPN/代理出网时首个 TCP/TLS 握手偶发超时，重试即可恢复，
+   * 避免段落首次翻译直接报「翻译失败」。仅重试「尚未收到响应」的请求，故幂等安全。
+   */
+  private async fetchWithRetry(
+    body: string,
+    signal?: AbortSignal,
+    retries = 2,
+  ): Promise<Response> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await fetch(this.endpoint(), {
+          method: "POST",
+          headers: this.headers(),
+          signal,
+          body,
+        });
+      } catch (e) {
+        lastErr = e;
+        if (signal?.aborted || !isTransientConnectError(e) || attempt === retries) {
+          throw e;
+        }
+        // 退避：200ms、500ms
+        await new Promise((r) => setTimeout(r, attempt === 0 ? 200 : 500));
+      }
+    }
+    throw lastErr;
+  }
+
   async chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<string> {
-    const res = await fetch(this.endpoint(), {
-      method: "POST",
-      headers: this.headers(),
-      signal: opts.signal,
-      body: JSON.stringify({
+    const res = await this.fetchWithRetry(
+      JSON.stringify({
         model: this.config.model,
         messages,
         temperature: opts.temperature ?? 0.3,
         max_tokens: opts.maxTokens,
         stream: false,
       }),
-    });
+      opts.signal,
+    );
     if (!res.ok) {
       throw new Error(`[ai:${this.config.id}] ${res.status} ${await res.text()}`);
     }
@@ -51,18 +94,16 @@ export class OpenAICompatibleProvider implements AIProvider {
     messages: ChatMessage[],
     opts: ChatOptions = {},
   ): AsyncIterable<string> {
-    const res = await fetch(this.endpoint(), {
-      method: "POST",
-      headers: this.headers(),
-      signal: opts.signal,
-      body: JSON.stringify({
+    const res = await this.fetchWithRetry(
+      JSON.stringify({
         model: this.config.model,
         messages,
         temperature: opts.temperature ?? 0.3,
         max_tokens: opts.maxTokens,
         stream: true,
       }),
-    });
+      opts.signal,
+    );
     if (!res.ok || !res.body) {
       throw new Error(`[ai:${this.config.id}] ${res.status} ${await res.text()}`);
     }
