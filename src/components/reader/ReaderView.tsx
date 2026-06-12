@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { THEMES, type ThemeId } from "@/lib/theme/tokens";
@@ -60,6 +60,22 @@ export default function ReaderView({
   const [recapLive, setRecapLive] = useState<TState | null>(null);
   const [saved, setSaved] = useState<Record<string, boolean>>({});
   const [vocabCount, setVocabCount] = useState(8);
+  const [layout, setLayout] = useState<"page" | "scroll">("page");
+
+  // 排版偏好持久化（翻页 / 滚动）
+  useEffect(() => {
+    const saved = window.localStorage.getItem("kreader-layout");
+    if (saved === "scroll" || saved === "page") setLayout(saved);
+  }, []);
+  useEffect(() => {
+    window.localStorage.setItem("kreader-layout", layout);
+  }, [layout]);
+
+  // 翻页模式：把整张跨页等比缩放到正好容纳进可视区域，永不出现上下滚动条、也不裁切正文。
+  // transform 不影响 offsetWidth/offsetHeight，量到的是未缩放的自然尺寸，因此不会形成反馈循环。
+  const fitAreaRef = useRef<HTMLDivElement>(null);
+  const fitBookRef = useRef<HTMLDivElement>(null);
+  const [fit, setFit] = useState(1);
 
   const sp = spreads[spread];
   const lastNo = useMemo(() => Math.max(...spreads.flatMap((s) => [s.l.no, s.r.no])), [spreads]);
@@ -105,13 +121,33 @@ export default function ReaderView({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "ArrowRight") next();
-      if (e.key === "ArrowLeft") prev();
+      if (layout === "page" && e.key === "ArrowRight") next();
+      if (layout === "page" && e.key === "ArrowLeft") prev();
       if (e.key === "Escape") { setWc(null); setSettingsOpen(false); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [next, prev]);
+  }, [next, prev, layout]);
+
+  // 翻页模式下，按可视区域重新计算缩放比例。内容（译文展开/字号/行距/换页）或窗口变化时都重量。
+  useEffect(() => {
+    if (layout !== "page") return;
+    const area = fitAreaRef.current;
+    const book = fitBookRef.current;
+    if (!area || !book) return;
+    const measure = () => {
+      const availH = area.clientHeight - 44; // 上下留白
+      const availW = area.clientWidth - 96; // 两侧翻页按钮留白
+      const natH = book.offsetHeight;
+      const natW = book.offsetWidth;
+      if (natH <= 0 || natW <= 0) return;
+      setFit(Math.min(1, availH / natH, availW / natW));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(area);
+    return () => ro.disconnect();
+  }, [layout, spread, fs, lh, biMode, expanded, trans]);
 
   // ── AI 翻译（导入书无预置译文时）──
   const fetchTranslate = useCallback(async (id: string, text: string) => {
@@ -313,9 +349,9 @@ export default function ReaderView({
             <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
               <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 2.5, color: "var(--ink2)", marginBottom: 8 }}>排版</div>
               <div style={{ display: "flex", gap: 6 }}>
-                <span style={{ fontSize: 11, padding: "5px 10px", borderRadius: 7, background: "var(--acc)", color: "#FBF6EA" }}>横排 · 翻页</span>
-                <span style={{ fontSize: 11, padding: "5px 10px", borderRadius: 7, border: "1px dashed var(--line)", color: "var(--ink2)" }}>竖排 右→左</span>
-                <span style={{ fontSize: 11, padding: "5px 10px", borderRadius: 7, border: "1px dashed var(--line)", color: "var(--ink2)" }}>滚动</span>
+                <button onClick={() => setLayout("page")} title="双页翻页 · 自动缩放铺满，不上下滚动" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "5px 10px", borderRadius: 7, border: `1px solid ${layout === "page" ? "var(--acc)" : "var(--line)"}`, background: layout === "page" ? "var(--acc)" : "transparent", color: layout === "page" ? "#FBF6EA" : "var(--ink)" }}>横排 · 翻页</button>
+                <button onClick={() => setLayout("scroll")} title="单栏连续 · 像普通电子书一样向下滚动" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "5px 10px", borderRadius: 7, border: `1px solid ${layout === "scroll" ? "var(--acc)" : "var(--line)"}`, background: layout === "scroll" ? "var(--acc)" : "transparent", color: layout === "scroll" ? "#FBF6EA" : "var(--ink)" }}>滚动</button>
+                <span title="开发中" style={{ fontSize: 11, padding: "5px 10px", borderRadius: 7, border: "1px dashed var(--line)", color: "var(--ink2)" }}>竖排 右→左</span>
               </div>
             </div>
           </div>
@@ -374,11 +410,12 @@ export default function ReaderView({
 
         {/* 中栏 · 书页 */}
         <div style={{ flex: 1, minWidth: 0, position: "relative", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          <div style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: "28px 64px 16px 64px", position: "relative" }}>
+          {layout === "page" ? (
+          <div ref={fitAreaRef} style={{ flex: 1, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", padding: "28px 64px 16px 64px", position: "relative" }}>
             <button onClick={prev} title="上一页（←）" style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", width: 40, height: 40, borderRadius: 999, border: "1px solid var(--line)", background: "var(--page)", color: "var(--ink2)", cursor: "pointer", fontSize: 15, opacity: spread === 0 ? 0.35 : 1, boxShadow: "0 4px 12px -4px rgba(50,35,15,0.25)" }}>‹</button>
             <button onClick={next} title="下一页（→）" style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", width: 40, height: 40, borderRadius: 999, border: "1px solid var(--line)", background: "var(--page)", color: "var(--ink2)", cursor: "pointer", fontSize: 15, opacity: spread === spreads.length - 1 ? 0.35 : 1, boxShadow: "0 4px 12px -4px rgba(50,35,15,0.25)" }}>›</button>
 
-            <div style={{ position: "relative", maxWidth: 880, minWidth: 760, width: "100%" }}>
+            <div ref={fitBookRef} style={{ position: "relative", maxWidth: 880, minWidth: 760, width: "100%", transform: `scale(${fit})`, transformOrigin: "center center" }}>
               <div style={{ position: "absolute", inset: 0, transform: "translate(5px,6px)", background: "var(--page)", borderRadius: 6, opacity: 0.55 }} />
               <div style={{ position: "absolute", inset: 0, transform: "translate(2px,3px)", background: "var(--page)", borderRadius: 6, opacity: 0.8 }} />
               <div style={{ position: "relative", display: "flex", alignItems: "stretch", background: "var(--page)", borderRadius: 6, boxShadow: "0 28px 64px -24px rgba(50,35,15,0.45)" }}>
@@ -428,6 +465,21 @@ export default function ReaderView({
               </div>
             )}
           </div>
+          ) : (
+            <div style={{ flex: 1, overflowY: "auto", position: "relative" }}>
+              <div style={{ maxWidth: 720, margin: "0 auto", padding: "44px 44px 72px 44px" }}>
+                {spreads.map((s, si) => (
+                  <div key={si}>
+                    {renderHead(s.l)}
+                    {s.l.ps.map(renderPara)}
+                    {renderHead(s.r)}
+                    {s.r.ps.map(renderPara)}
+                  </div>
+                ))}
+                <div style={{ textAlign: "center", marginTop: 8, fontFamily: "var(--font-mincho)", color: "var(--ink2)", fontSize: 13, letterSpacing: 6, opacity: 0.7 }}>✕ ✕ ✕</div>
+              </div>
+            </div>
+          )}
 
           {/* 底部进度 */}
           <div style={{ flex: "none", display: "flex", alignItems: "center", justifyContent: "center", gap: 18, padding: "10px 24px 14px 24px" }}>

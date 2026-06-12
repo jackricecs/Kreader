@@ -8,7 +8,7 @@ interface DbBook {
   format: string; chapters: DbChapter[];
 }
 
-const CHARS_PER_PAGE = 720; // 单页字符预算
+const CHARS_PER_PAGE = 560; // 单页字符预算（贴合单屏页高，翻页模式几乎无需缩放）
 
 interface Page { ps: string[]; head?: string; headNo?: number }
 /** 每章首段的元信息：段落 id → { 标题, 章序(1起) }。用于强制分页与章首大标题。 */

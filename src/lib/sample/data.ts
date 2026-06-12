@@ -109,17 +109,10 @@ export const GINGA: BookContent = {
   recap: "银河课堂上，老师指着星座图问大家：「这白蒙蒙的银河究竟是什么？」康帕内拉第一个举手，乔班尼却没敢举——明明他在杂志上读到过答案。被点名的两人都答不上来，扎内利在一旁嗤笑。老师只好自己揭晓：银河用大望远镜看去，是无数颗小小的星星。",
 };
 
-// 书架展示书目（青空文库公版 + 虚构系列 + TXT 导入示例）。
+// 书架展示书目：仅保留有完整内容、可真正打开阅读的示例书。
+// 其余仅作封面演示、点开为空的占位书已移除——真实书目来自「导入书籍」。
 export const SHELF_BOOKS: ShelfBook[] = [
   { id: "ginga", title: "銀河鉄道の夜", author: "宮沢賢治", lang: "日文", fmt: "EPUB", prog: 5, grad: "linear-gradient(160deg,#27354F,#101723)", cur: true },
-  { id: "tsuki", title: "月影のレールウェイ", author: "高見沢ルイ", lang: "日文", fmt: "EPUB", prog: 64, grad: "linear-gradient(160deg,#3B3550,#1E1A30)", series: "全3巻", progLabel: "第2巻 · 64%" },
-  { id: "kokoro", title: "こゝろ", author: "夏目漱石", lang: "日文", fmt: "EPUB", prog: 38, grad: "linear-gradient(160deg,#34404A,#161D24)" },
-  { id: "yodaka", title: "よだかの星", author: "宮沢賢治", lang: "日文", fmt: "EPUB", prog: 12, grad: "linear-gradient(160deg,#46324E,#1F1426)" },
-  { id: "qunxing", title: "群星彼端", author: "本地导入", lang: "中文", fmt: "TXT", prog: 72, grad: "linear-gradient(160deg,#3F3F3F,#191919)" },
-  { id: "merosu", title: "走れメロス", author: "太宰治", lang: "日文", fmt: "EPUB", prog: 100, grad: "linear-gradient(160deg,#6B4F2A,#2E2112)" },
-  { id: "rashomon", title: "羅生門", author: "芥川龍之介", lang: "日文", fmt: "EPUB", prog: 100, grad: "linear-gradient(160deg,#2E4034,#141F18)" },
-  { id: "ningen", title: "人間失格", author: "太宰治", lang: "日文", fmt: "EPUB", prog: 0, grad: "linear-gradient(160deg,#4A2730,#221016)" },
-  { id: "kaze", title: "風の又三郎", author: "宮沢賢治", lang: "日文", fmt: "EPUB", prog: 0, grad: "linear-gradient(160deg,#54583E,#262A18)" },
 ];
 
 export const BOOK_CONTENTS: Record<string, BookContent> = { ginga: GINGA };
