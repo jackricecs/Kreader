@@ -80,6 +80,30 @@ export function buildSegmentPrompt(
   ];
 }
 
+/**
+ * 人物关系网：只依据【已读正文】抽取登场人物与两两关系，只回 JSON，便于服务端解析。
+ * 与问答 / 提要同源——绝不引入未读人物或未读关系，避免剧透。
+ */
+export function buildCharGraphPrompt(readContext: string): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content:
+        "你是小说人物关系分析助手。只能依据下面【已读正文】，抽取已经登场的主要人物" +
+        "（至多 8 人）以及他们之间**已在正文中体现**的关系。绝不可引入尚未读到的人物或关系，" +
+        "不得臆测。\n" +
+        "只输出一个 JSON 对象，格式严格如下：\n" +
+        '{"characters":[{"id":"c1","name":"人物名（用原文或正文中的称呼）","glyph":"单字或双字代称","desc":"一句话简介","first":"首次出现的简短线索"}],' +
+        '"relations":[{"a":"c1","b":"c2","label":"关系（如：同学/兄妹/师徒，2-4字）"}]}\n' +
+        "id 用 c1、c2… 短标识，relations 里的 a/b 必须是上面出现过的 id。" +
+        "若已读内容人物太少，characters 可少于 8，relations 可为空数组。" +
+        "不要输出 JSON 以外的任何文字、解释或代码块标记。\n\n【已读正文】\n" +
+        readContext,
+    },
+    { role: "user", content: "请输出已读范围内的人物关系网 JSON。" },
+  ];
+}
+
 /** 前情提要：同样只基于已读内容，分「最近一章 + 全局主线」。 */
 export function buildRecapPrompt(readContext: string): ChatMessage[] {
   return [

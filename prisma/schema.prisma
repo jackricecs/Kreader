@@ -25,6 +25,29 @@ model Book {
   chapters  Chapter[]
   glossary  GlossaryTerm[]
   progress  ReadingProgress?
+  charGraph CharGraphCache?
+  recap     RecapCache?
+}
+
+// AI 前情提要缓存：每本一份，命中规则同人物关系网（仅当当前已读 upto >= 缓存 upto 时返回，防剧透）。
+model RecapCache {
+  id        String   @id @default(cuid())
+  bookId    String   @unique
+  upto      Int // 生成时的已读全局段落上界
+  data      String // 前情提要文本
+  updatedAt DateTime @updatedAt
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+}
+
+// AI 人物关系网缓存：每本一份，记录生成时的已读段落上界 upto。
+// 命中规则（防剧透）：仅当「当前已读 upto >= 缓存 upto」时返回——缓存是已读前缀的子集，绝不泄露未读人物。
+model CharGraphCache {
+  id        String   @id @default(cuid())
+  bookId    String   @unique
+  upto      Int // 生成时的已读全局段落上界（globalIndex）
+  data      String // JSON: { characters, relations }
+  updatedAt DateTime @updatedAt
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
 }
 
 model Chapter {

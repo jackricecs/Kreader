@@ -97,9 +97,20 @@ export interface ShelfBook {
   imported?: boolean; // 来自 DB 导入
 }
 
+export interface BookMeta {
+  id: string;
+  title: string;
+  author: string;
+  year?: string;
+  lang: string;
+  fmt: string;
+  chapterTitle: string;
+  chapterNo: string;
+}
+
 // 一本可阅读书的完整内容（示例书）。
 export interface BookContent {
-  meta: { id: string; title: string; author: string; year?: string; lang: string; fmt: string; chapterTitle: string; chapterNo: string };
+  meta: BookMeta;
   dict: Record<string, DictEntry>;
   paras: Record<string, Para>;
   spreads: Spread[];
@@ -110,4 +121,18 @@ export interface BookContent {
   enc: EncEntry[];
   qa: QAEntry[];
   recap: string;
+}
+
+// 章节轻量元信息：用于「秒开目录」——只含标题与段落数，不含正文。
+export interface ChapterMeta {
+  index: number; // 章序，0 起
+  title: string;
+  paraCount: number;
+}
+
+// 导入书的「外壳」：服务端瞬时返回，正文按章懒加载。
+export interface BookShell {
+  meta: BookMeta;
+  toc: ChapterMeta[];
+  totalParas: number;
 }

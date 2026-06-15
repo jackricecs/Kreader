@@ -1,11 +1,16 @@
 // 把 DB 书（章节 / 段落）转成阅读器内容：分页成双页跨页。
-import type { BookContent, Para, Spread } from "./types";
+import type { BookContent, BookShell, Para, Spread } from "./types";
 
 interface DbParagraph { id: string; text: string; translation: string | null }
 interface DbChapter { index: number; title: string; paragraphs: DbParagraph[] }
 interface DbBook {
   id: string; title: string; author: string | null; language: string;
   format: string; chapters: DbChapter[];
+}
+
+/** 把 DB 语言码转成展示标签。 */
+function langLabelOf(language: string): string {
+  return language === "ja" ? "日文" : language === "zh" ? "中文" : language;
 }
 
 const CHARS_PER_PAGE = 560; // 单页字符预算（贴合单屏页高，翻页模式几乎无需缩放）
@@ -79,12 +84,10 @@ export function dbBookToContent(book: DbBook): BookContent {
     for (const id of [...s.l.ps, ...s.r.ps]) if (!(id in spreadOf)) spreadOf[id] = i;
   });
 
-  const langLabel = book.language === "ja" ? "日文" : book.language === "zh" ? "中文" : book.language;
-
   return {
     meta: {
       id: book.id, title: book.title, author: book.author ?? "未知",
-      lang: langLabel, fmt: book.format.toUpperCase(),
+      lang: langLabelOf(book.language), fmt: book.format.toUpperCase(),
       chapterTitle: firstChapter?.title ?? "正文",
       chapterNo: firstChapter?.title ?? "正文",
     },
@@ -101,5 +104,33 @@ export function dbBookToContent(book: DbBook): BookContent {
     enc: [],
     qa: [],
     recap: "",
+  };
+}
+
+interface DbShellChapter { index: number; title: string; _count: { paragraphs: number } }
+interface DbShellBook {
+  id: string; title: string; author: string | null; language: string;
+  format: string; chapters: DbShellChapter[];
+}
+
+/**
+ * 轻量「外壳」：只取书名 + 目录 + 每章段落数（不取正文），用于秒开目录。
+ * 正文由客户端按章经 /api/books/[id]/chapter/[index] 懒加载。
+ */
+export function dbBookToShell(book: DbShellBook): BookShell {
+  const firstChapter = book.chapters[0];
+  return {
+    meta: {
+      id: book.id, title: book.title, author: book.author ?? "未知",
+      lang: langLabelOf(book.language), fmt: book.format.toUpperCase(),
+      chapterTitle: firstChapter?.title ?? "正文",
+      chapterNo: firstChapter?.title ?? "正文",
+    },
+    toc: book.chapters.map((c) => ({
+      index: c.index,
+      title: c.title,
+      paraCount: c._count.paragraphs,
+    })),
+    totalParas: book.chapters.reduce((n, c) => n + c._count.paragraphs, 0),
   };
 }

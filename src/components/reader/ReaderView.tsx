@@ -1,10 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { THEMES, type ThemeId } from "@/lib/theme/tokens";
-import type { BookContent, Para, Seg, SpreadSide } from "@/lib/reader/types";
+import type {
+  BookContent,
+  BookShell,
+  CharBio,
+  CharEdge,
+  CharNode,
+  Para,
+  Seg,
+  Spread,
+  SpreadSide,
+} from "@/lib/reader/types";
+import { paginateChapter } from "@/lib/reader/paginate";
 
 // 1–99 的中文数字，用于「第 N 章」眉标。
 const CN = "零一二三四五六七八九十";
@@ -30,31 +41,88 @@ const TABS = [
 
 interface WC { key: string; x: number; y: number }
 interface TState { loading: boolean; text: string }
+interface GraphChar { id: string; name: string; glyph: string; desc: string; first: string }
+interface GraphRel { a: string; b: string; label: string }
+interface GraphData { nodes: CharNode[]; edges: CharEdge[]; chars: Record<string, CharBio> }
+
+// 把示例书的全局跨页摊平成「单页」序列，丢掉末尾空白页。
+function flattenSpreads(spreads: Spread[]): SpreadSide[] {
+  const out: SpreadSide[] = [];
+  for (const s of spreads) { out.push(s.l); out.push(s.r); }
+  while (out.length > 1 && out[out.length - 1].ps.length === 0 && !out[out.length - 1].illus) out.pop();
+  return out;
+}
+
+// 环形布局：把 AI 抽取的人物 / 关系摆到 288×232 画布的圆周上，复用现有 SVG 渲染。
+function buildGraphLayout(characters: GraphChar[], relations: GraphRel[]): GraphData {
+  const cx = 144, cy = 104;
+  const R = characters.length <= 1 ? 0 : Math.min(80, 44 + characters.length * 6);
+  const pos: Record<string, [number, number]> = {};
+  const nodes: CharNode[] = characters.map((c, i) => {
+    const ang = -Math.PI / 2 + (i * 2 * Math.PI) / characters.length;
+    const x = characters.length === 1 ? cx : cx + R * Math.cos(ang);
+    const y = characters.length === 1 ? cy : cy + R * Math.sin(ang);
+    pos[c.id] = [x, y];
+    return { id: c.id, x, y, name: c.name };
+  });
+  const chars: Record<string, CharBio> = {};
+  for (const c of characters) {
+    chars[c.id] = { jp: c.name, zh: c.desc, first: c.first || "已读", glyph: c.glyph || c.name.slice(0, 1), text: c.desc };
+  }
+  const edges: CharEdge[] = relations
+    .filter((r) => pos[r.a] && pos[r.b])
+    .map((r) => ({ a: pos[r.a], b: pos[r.b], label: r.label }));
+  return { nodes, edges, chars };
+}
 
 export default function ReaderView({
   content,
+  shell,
   initialTab,
 }: {
-  content: BookContent;
+  content?: BookContent;
+  shell?: BookShell;
   initialTab?: string;
 }) {
-  const { meta, paras, dict, spreads, toc, chars, nodes, edges, enc, qa, recap } = content;
+  const isSample = !!content;
+  const meta = content ? content.meta : shell!.meta;
+  const dict = content?.dict ?? {};
+  const sampleQa = content?.qa ?? [];
+  const enc = content?.enc ?? [];
+  const sampleRecap = content?.recap ?? "";
   const router = useRouter();
 
-  const [spread, setSpread] = useState(0);
+  // 章节元信息：示例书视为「单章、全部已加载」；导入书来自 shell。
+  const chapters = useMemo(() => {
+    if (shell) return shell.toc;
+    const count = content ? Object.keys(content.paras).length : 0;
+    return [{ index: 0, title: meta.chapterTitle, paraCount: count }];
+  }, [shell, content, meta.chapterTitle]);
+  const totalParas = shell ? shell.totalParas : content ? Object.keys(content.paras).length : 0;
+  // 各章起始的全局段落序（前缀和），用于防剧透截断。
+  const chapterStart = useMemo(() => {
+    const m: Record<number, number> = {};
+    let acc = 0;
+    for (const c of chapters) { m[c.index] = acc; acc += c.paraCount; }
+    return m;
+  }, [chapters]);
+
+  // ── 位置与排版 ──
+  const [chIdx, setChIdx] = useState(0);
+  const [pi, setPi] = useState(0); // 章内页索引
+  const [cols, setCols] = useState<1 | 2>(1); // 单页 / 双页
   const [chaptering, setChaptering] = useState(false);
-  const [animA, setAnimA] = useState(true);
   const [tab, setTab] = useState(initialTab && TABS.some((t) => t.id === initialTab) ? initialTab : "chars");
   const [biMode, setBiMode] = useState(false);
   const [ambience, setAmbience] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [fs, setFs] = useState(17);
+  const [fs, setFs] = useState(19);
   const [lh, setLh] = useState(2.1);
   const [theme, setTheme] = useState<ThemeId>("paper");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [trans, setTrans] = useState<Record<string, TState>>({});
   const [wc, setWc] = useState<WC | null>(null);
-  const [selChar, setSelChar] = useState(nodes[0]?.id ?? "");
+  const [selChar, setSelChar] = useState(content?.nodes[0]?.id ?? "");
   const [qaId, setQaId] = useState<string | null>(null);
   const [qaLive, setQaLive] = useState<TState | null>(null);
   const [recapLive, setRecapLive] = useState<TState | null>(null);
@@ -62,47 +130,108 @@ export default function ReaderView({
   const [vocabCount, setVocabCount] = useState(8);
   const [layout, setLayout] = useState<"page" | "scroll">("page");
 
-  // 排版偏好持久化（翻页 / 滚动）
+  // 已加载章节的页与段落（示例书初始即全量）。
+  const [chapterPages, setChapterPages] = useState<Record<number, SpreadSide[]>>(
+    (): Record<number, SpreadSide[]> => (content ? { 0: flattenSpreads(content.spreads) } : {}),
+  );
+  const [parasStore, setParasStore] = useState<Record<string, Para>>(() => (content ? content.paras : {}));
+  const [chapterErr, setChapterErr] = useState<string | null>(null);
+  const chapterPagesRef = useRef(chapterPages);
+  useEffect(() => { chapterPagesRef.current = chapterPages; }, [chapterPages]);
+  const loadingRef = useRef<Set<number>>(new Set());
+
+  // 排版偏好持久化（翻页 / 滚动；单页 / 双页）
   useEffect(() => {
-    const saved = window.localStorage.getItem("kreader-layout");
-    if (saved === "scroll" || saved === "page") setLayout(saved);
+    const l = window.localStorage.getItem("kreader-layout");
+    if (l === "scroll" || l === "page") setLayout(l);
+    const c = window.localStorage.getItem("kreader-cols");
+    if (c === "1" || c === "2") setCols(Number(c) as 1 | 2);
   }, []);
+  useEffect(() => { window.localStorage.setItem("kreader-layout", layout); }, [layout]);
+  useEffect(() => { window.localStorage.setItem("kreader-cols", String(cols)); }, [cols]);
+  // 双页对齐：切到双页时把奇数页索引归到偶数边。
+  useEffect(() => { if (cols === 2 && pi % 2 === 1) setPi((p) => Math.max(0, p - 1)); }, [cols, pi]);
+
+  // ── 章节懒加载（导入书）──
+  const loadChapter = useCallback(async (i: number) => {
+    if (i < 0 || i >= chapters.length) return;
+    if (chapterPagesRef.current[i] || loadingRef.current.has(i)) return;
+    loadingRef.current.add(i);
+    setChapterErr(null);
+    try {
+      const res = await fetch(`/api/books/${meta.id}/chapter/${i}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? `${res.status}`);
+      const raw = (data.paras ?? []) as { id: string; text: string; translation: string | null }[];
+      const paras: Para[] = raw.map((p) => ({ id: p.id, segs: [{ t: p.text, plain: true }], zh: p.translation ?? undefined }));
+      const cm = chapters.find((c) => c.index === i);
+      const pages = paginateChapter(paras, cm?.title, i + 1);
+      setParasStore((prev) => { const next = { ...prev }; for (const p of paras) next[p.id] = p; return next; });
+      setChapterPages((prev) => ({ ...prev, [i]: pages }));
+    } catch (e) {
+      setChapterErr((e as Error).message);
+    } finally {
+      loadingRef.current.delete(i);
+    }
+  }, [chapters, meta.id]);
+
+  // 进入 / 切换当前章时确保已加载，并后台预取下一章。
+  useEffect(() => { if (!isSample) loadChapter(chIdx); }, [isSample, chIdx, loadChapter]);
+  useEffect(() => { if (!isSample && chIdx + 1 < chapters.length) loadChapter(chIdx + 1); }, [isSample, chIdx, chapters.length, loadChapter]);
+
+  const pages = useMemo(() => chapterPages[chIdx] ?? [], [chapterPages, chIdx]);
+  const pagesReady = chIdx in chapterPages;
+  const left = pages[pi];
+  const right = cols === 2 ? pages[pi + 1] : undefined;
+
+  // 回到上一章时跳到该章末页（等加载完成后再定位）。
+  const jumpEndRef = useRef(false);
   useEffect(() => {
-    window.localStorage.setItem("kreader-layout", layout);
-  }, [layout]);
-
-  // 翻页模式：把整张跨页等比缩放到正好容纳进可视区域，永不出现上下滚动条、也不裁切正文。
-  // transform 不影响 offsetWidth/offsetHeight，量到的是未缩放的自然尺寸，因此不会形成反馈循环。
-  const fitAreaRef = useRef<HTMLDivElement>(null);
-  const fitBookRef = useRef<HTMLDivElement>(null);
-  const [fit, setFit] = useState(1);
-
-  const sp = spreads[spread];
-  const lastNo = useMemo(() => Math.max(...spreads.flatMap((s) => [s.l.no, s.r.no])), [spreads]);
-  const total = meta.id === "ginga" ? 248 : lastNo;
+    if (!jumpEndRef.current || !(chIdx in chapterPages)) return;
+    const pgs = chapterPages[chIdx];
+    const last = pgs.length ? (Math.ceil(pgs.length / cols) - 1) * cols : 0;
+    setPi(Math.max(0, last));
+    jumpEndRef.current = false;
+  }, [chIdx, chapterPages, cols]);
 
   const next = useCallback(() => {
-    setSpread((s) => (s < spreads.length - 1 ? s + 1 : s));
-    setAnimA((a) => !a);
     setWc(null);
-  }, [spreads.length]);
+    const pgs = chapterPagesRef.current[chIdx] ?? [];
+    if (pi + cols < pgs.length) { setPi(pi + cols); return; }
+    if (chIdx + 1 < chapters.length) { setChIdx(chIdx + 1); setPi(0); }
+  }, [chIdx, pi, cols, chapters.length]);
   const prev = useCallback(() => {
-    setSpread((s) => (s > 0 ? s - 1 : s));
-    setAnimA((a) => !a);
     setWc(null);
-  }, []);
-  const goTo = useCallback((i: number) => {
-    setSpread(Math.max(0, Math.min(spreads.length - 1, i)));
-    setAnimA((a) => !a);
-    setWc(null);
-  }, [spreads.length]);
+    if (pi - cols >= 0) { setPi(pi - cols); return; }
+    if (pi > 0) { setPi(0); return; }
+    if (chIdx > 0) { jumpEndRef.current = true; setChIdx(chIdx - 1); setPi(0); loadChapter(chIdx - 1); }
+  }, [pi, cols, chIdx, loadChapter]);
 
-  // 当前所在章：spread 落在哪个章的起始之后。
-  const curChapter = useMemo(() => {
+  // 导入书目录跳转
+  const goToChapter = useCallback((i: number) => { setWc(null); setChIdx(i); setPi(0); loadChapter(i); }, [loadChapter]);
+  // 示例书目录跳转（跨页索引 → 页索引）
+  const goToSampleSpread = useCallback((spread: number) => { setWc(null); setPi(spread * 2); }, []);
+
+  const atStart = chIdx === 0 && pi === 0;
+  const atEnd = chIdx === chapters.length - 1 && pi + cols >= pages.length;
+
+  // 当前所在章（示例书按跨页位置高亮；导入书即 chIdx）。
+  const sampleCur = useMemo(() => {
+    if (!content) return -1;
     let idx = -1;
-    toc.forEach((c, i) => { if (typeof c.spread === "number" && c.spread <= spread) idx = i; });
+    content.toc.forEach((c, i) => { if (typeof c.spread === "number" && c.spread <= Math.floor(pi / 2)) idx = i; });
     return idx;
-  }, [toc, spread]);
+  }, [content, pi]);
+
+  // 已读段落数（到当前视图最后一页为止）与全书百分比。
+  const visibleParas = useMemo(() => {
+    let count = 0;
+    for (let k = 0; k <= pi + cols - 1 && k < pages.length; k++) count += pages[k].ps.length;
+    return count;
+  }, [pages, pi, cols]);
+  const readParas = (chapterStart[chIdx] ?? 0) + visibleParas;
+  const bookPct = totalParas ? Math.min(100, Math.max(0, Math.round((readParas / totalParas) * 100))) : 0;
+  const curChapterTitle = chapters[chIdx]?.title ?? meta.chapterNo;
 
   // TXT 等单章导入书：AI 智能分章后刷新页面重新分章。
   const onAutoChapter = useCallback(async () => {
@@ -129,15 +258,18 @@ export default function ReaderView({
     return () => window.removeEventListener("keydown", onKey);
   }, [next, prev, layout]);
 
-  // 翻页模式下，按可视区域重新计算缩放比例。内容（译文展开/字号/行距/换页）或窗口变化时都重量。
+  // 翻页模式：把书页等比缩放到正好容纳进可视区域。
+  const fitAreaRef = useRef<HTMLDivElement>(null);
+  const fitBookRef = useRef<HTMLDivElement>(null);
+  const [fit, setFit] = useState(1);
   useEffect(() => {
     if (layout !== "page") return;
     const area = fitAreaRef.current;
     const book = fitBookRef.current;
     if (!area || !book) return;
     const measure = () => {
-      const availH = area.clientHeight - 44; // 上下留白
-      const availW = area.clientWidth - 96; // 两侧翻页按钮留白
+      const availH = area.clientHeight - 44;
+      const availW = area.clientWidth - 96;
       const natH = book.offsetHeight;
       const natW = book.offsetWidth;
       if (natH <= 0 || natW <= 0) return;
@@ -147,7 +279,7 @@ export default function ReaderView({
     const ro = new ResizeObserver(measure);
     ro.observe(area);
     return () => ro.disconnect();
-  }, [layout, spread, fs, lh, biMode, expanded, trans]);
+  }, [layout, chIdx, pi, cols, fs, lh, biMode, expanded, trans, pagesReady]);
 
   // ── AI 翻译（导入书无预置译文时）──
   const fetchTranslate = useCallback(async (id: string, text: string) => {
@@ -176,22 +308,21 @@ export default function ReaderView({
 
   const onPara = (id: string) => {
     setWc(null);
-    const para = paras[id];
+    const para = parasStore[id];
+    if (!para) return;
     if (expanded[id]) { setExpanded((x) => ({ ...x, [id]: false })); return; }
     setExpanded((x) => ({ ...x, [id]: true }));
-    if (!para.zh && !trans[id]) {
-      fetchTranslate(id, para.segs.map((s) => s.t).join(""));
-    }
+    if (!para.zh && !trans[id]) fetchTranslate(id, para.segs.map((s) => s.t).join(""));
   };
 
-  // 双语对照：自动翻译当前跨页中无预置译文的段落
+  // 双语对照：自动翻译当前视图中无预置译文的段落
   useEffect(() => {
-    if (!biMode || !sp) return;
-    for (const id of [...sp.l.ps, ...sp.r.ps]) {
-      const para = paras[id];
+    if (!biMode) return;
+    for (const id of [...(left?.ps ?? []), ...(right?.ps ?? [])]) {
+      const para = parasStore[id];
       if (para && !para.zh && !trans[id]) fetchTranslate(id, para.segs.map((s) => s.t).join(""));
     }
-  }, [biMode, sp, paras, trans, fetchTranslate]);
+  }, [biMode, left, right, parasStore, trans, fetchTranslate]);
 
   const onWord = (e: React.MouseEvent, key: string) => {
     e.stopPropagation();
@@ -201,12 +332,20 @@ export default function ReaderView({
     setWc({ key, x: Math.max(12, x), y: Math.max(12, y) });
   };
 
-  // 已读上下文（用于剧透安全问答 / 提要）
-  const readContext = useMemo(() => {
-    const ids: string[] = [];
-    for (let i = 0; i <= spread; i++) ids.push(...spreads[i].l.ps, ...spreads[i].r.ps);
-    return ids.map((id) => paras[id]?.segs.map((s) => s.t).join("")).filter(Boolean).join("\n");
-  }, [spread, spreads, paras]);
+  // ── 已读上下文：导入书由服务端按全局段落序截断；示例书本地拼接 ──
+  const getReadContext = useCallback(async (): Promise<string> => {
+    if (isSample) {
+      const ids: string[] = [];
+      for (let k = 0; k <= pi + cols - 1 && k < pages.length; k++) ids.push(...pages[k].ps);
+      return ids.map((id) => parasStore[id]?.segs.map((s) => s.t).join("")).filter(Boolean).join("\n");
+    }
+    const upto = readParas - 1;
+    if (upto < 0) return "";
+    const res = await fetch(`/api/books/${meta.id}/context?upto=${upto}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error ?? "读取已读上下文失败");
+    return (data.text as string) ?? "";
+  }, [isSample, pi, cols, pages, parasStore, readParas, meta.id]);
 
   async function streamInto(url: string, body: object, set: (s: TState) => void) {
     set({ loading: true, text: "" });
@@ -228,8 +367,104 @@ export default function ReaderView({
     }
   }
 
-  const onQaCustom = (q: string) => { setQaId(null); streamInto("/api/ai/qa", { question: q, readContext }, setQaLive); };
-  const onRecap = () => streamInto("/api/ai/recap", { readContext }, setRecapLive);
+  const onQaCustom = async (q: string) => {
+    setQaId(null);
+    setQaLive({ loading: true, text: "" });
+    try {
+      const readContext = await getReadContext();
+      await streamInto("/api/ai/qa", { question: q, readContext }, setQaLive);
+    } catch (e) {
+      setQaLive({ loading: false, text: "[失败] " + (e as Error).message });
+    }
+  };
+  // 前情提要（带按进度缓存）。force=true 跳过缓存重新生成。
+  const [recapUpto, setRecapUpto] = useState<number | null>(null);
+  const [recapCached, setRecapCached] = useState(false);
+  const recapStale = !!recapLive?.text && !recapLive.loading && recapUpto != null && readParas - 1 > recapUpto;
+  const onRecap = async (force = false) => {
+    setRecapLive({ loading: true, text: "" });
+    setRecapCached(false);
+    try {
+      const upto = readParas - 1;
+      const body = isSample || upto < 0 ? { readContext: await getReadContext() } : { bookId: meta.id, upto, force };
+      const res = await fetch("/api/ai/recap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const rawUpto = res.headers.get("X-Recap-Upto");
+      const hUpto = rawUpto ? Number(rawUpto) : NaN;
+      setRecapUpto(Number.isInteger(hUpto) ? hUpto : upto >= 0 ? upto : null);
+      setRecapCached(res.headers.get("X-Recap-Cached") === "1");
+      if (!res.body) throw new Error("no stream");
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let acc = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        acc += dec.decode(value, { stream: true });
+        setRecapLive({ loading: true, text: acc });
+      }
+      setRecapLive({ loading: false, text: acc });
+    } catch (e) {
+      setRecapLive({ loading: false, text: "[失败] " + (e as Error).message });
+    }
+  };
+
+  // ── AI 人物关系网（导入书）·带缓存 ──
+  const [graph, setGraph] = useState<{ characters: GraphChar[]; relations: GraphRel[] } | null>(null);
+  const [graphUpto, setGraphUpto] = useState<number | null>(null); // 当前图谱基于的已读段落上界
+  const [graphState, setGraphState] = useState<{ loading: boolean; err: string | null }>({ loading: false, err: null });
+  // 读得比图谱生成位置更远 → 标记「可更新」，由用户决定是否花 token 重算。
+  const graphStale = graph != null && graphUpto != null && readParas - 1 > graphUpto;
+
+  // 进入「人物」Tab 且内存无图谱时，先尝试命中服务端缓存（不调用模型）。
+  const graphCacheTried = useRef(false);
+  useEffect(() => {
+    if (isSample || tab !== "chars" || graph || graphState.loading) return;
+    const upto = readParas - 1;
+    if (upto < 0 || graphCacheTried.current) return;
+    graphCacheTried.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/ai/chargraph?bookId=${meta.id}&upto=${upto}`);
+        const data = await res.json().catch(() => ({}));
+        if (cancelled || !res.ok || !data.cached || !data.characters?.length) return;
+        setGraph({ characters: data.characters, relations: data.relations ?? [] });
+        setGraphUpto(data.upto ?? upto);
+        setSelChar(data.characters[0].id);
+      } catch {
+        /* 缓存读取失败不打扰用户，按钮仍可手动生成 */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isSample, tab, graph, graphState.loading, readParas, meta.id]);
+
+  const onGenGraph = async () => {
+    setGraphState({ loading: true, err: null });
+    try {
+      const upto = readParas - 1;
+      if (isSample || upto < 0) { setGraphState({ loading: false, err: "还没读到正文，先往下读一点再生成" }); return; }
+      const res = await fetch("/api/ai/chargraph", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bookId: meta.id, upto }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? `${res.status}`);
+      if (!data.characters?.length) { setGraphState({ loading: false, err: "已读内容里还没识别到明确人物" }); return; }
+      setGraph({ characters: data.characters, relations: data.relations ?? [] });
+      setGraphUpto(upto);
+      setSelChar(data.characters[0].id);
+      setGraphState({ loading: false, err: null });
+    } catch (e) {
+      setGraphState({ loading: false, err: (e as Error).message });
+    }
+  };
+
+  const graphData: GraphData | null = useMemo(() => {
+    if (content) return { nodes: content.nodes, edges: content.edges, chars: content.chars };
+    if (graph) return buildGraphLayout(graph.characters, graph.relations);
+    return null;
+  }, [content, graph]);
+  const hasGraph = !!graphData && graphData.nodes.length > 0;
+  useEffect(() => {
+    if (graphData && graphData.nodes.length && !graphData.chars[selChar]) setSelChar(graphData.nodes[0].id);
+  }, [graphData, selChar]);
 
   const T = THEMES[theme];
   const rootVars = {
@@ -237,8 +472,6 @@ export default function ReaderView({
     "--line": T.line, "--acc": T.acc, "--soft": T.soft,
     "--fs": fs + "px", "--lh": String(lh),
   } as React.CSSProperties;
-
-  const bookPct = Math.round((sp.r.no / total) * 100);
 
   // ── 片段渲染 ──
   const renderSegs = (para: Para) =>
@@ -255,7 +488,7 @@ export default function ReaderView({
     });
 
   const renderPara = (id: string) => {
-    const para = paras[id];
+    const para = parasStore[id];
     if (!para) return null;
     const show = !!(biMode || expanded[id]);
     const zhText = para.zh ?? trans[id]?.text ?? "";
@@ -277,9 +510,8 @@ export default function ReaderView({
     );
   };
 
-  // 章首大标题：导入书每章用自己的标题与章序，示例书回退到 meta。
-  const renderHead = (side: SpreadSide) => {
-    if (!side.head) return null;
+  const renderHead = (side: SpreadSide | undefined) => {
+    if (!side?.head) return null;
     const eyebrow = side.headNo ? `第 ${cnNum(side.headNo)} 章` : "第 一 章";
     const title = side.headTitle ?? meta.chapterTitle;
     return (
@@ -291,8 +523,43 @@ export default function ReaderView({
     );
   };
 
+  // 一页正文（章首标题 + 段落 + 插画概念位）
+  const renderPageBody = (side: SpreadSide | undefined) => (
+    <>
+      {renderHead(side)}
+      <div style={{ flex: 1 }}>
+        {side?.ps.map(renderPara)}
+        {side?.illus && (
+          <div style={{ height: "100%", minHeight: 440, display: "flex", flexDirection: "column" }}>
+            <div style={{ flex: 1, border: "1px dashed var(--acc)", borderRadius: 10, background: "linear-gradient(170deg,rgba(39,53,79,0.06),rgba(178,58,42,0.04))", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: 24, textAlign: "center" }}>
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--acc)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 5.8L20 10.7l-6.1 1.9L12 18.4l-1.9-5.8L4 10.7l6.1-1.9z" /><path d="M19 3l0.7 2.1L21.8 5.8l-2.1 0.7L19 8.6l-0.7-2.1L16.2 5.8l2.1-0.7z" /></svg>
+              <div style={{ fontFamily: "var(--font-mincho)", fontSize: 15, fontWeight: 600, color: "var(--ink)", letterSpacing: 1 }}>AI 插画 · 名场面</div>
+              <div style={{ fontSize: 12, color: "var(--ink2)", lineHeight: 1.8, maxWidth: 240 }}>「点名」— 基于本章文本与情绪曲线生成的轻小说风格插画将插入此处（概念位）</div>
+              <button style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, letterSpacing: 1, padding: "7px 16px", borderRadius: 8, border: "1px solid var(--acc)", background: "transparent", color: "var(--acc)" }}>生成插画</button>
+            </div>
+            <div style={{ textAlign: "center", marginTop: 20, fontFamily: "var(--font-mincho)", color: "var(--ink2)", fontSize: 13, letterSpacing: 6 }}>✕ ✕ ✕</div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+
   const word = wc ? dict[wc.key] : null;
-  const hasAI = nodes.length > 0;
+
+  // 滚动模式下要懒加载的下一未加载章
+  const nextUnloaded = useMemo(() => {
+    for (const c of chapters) if (!(c.index in chapterPages)) return c.index;
+    return -1;
+  }, [chapters, chapterPages]);
+  const scrollSentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (isSample || layout !== "scroll" || nextUnloaded < 0) return;
+    const el = scrollSentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver((entries) => { if (entries[0].isIntersecting) loadChapter(nextUnloaded); });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [isSample, layout, nextUnloaded, loadChapter]);
 
   return (
     <div style={{ ...rootVars, height: "100vh", display: "flex", flexDirection: "column", background: "var(--app)", fontFamily: "var(--font-serif)", overflow: "hidden" }}>
@@ -311,7 +578,7 @@ export default function ReaderView({
           <div style={{ fontFamily: "var(--font-mincho)", fontSize: 15, fontWeight: 600, color: "var(--ink)" }}>
             {meta.title}<span style={{ fontSize: 11, fontWeight: 400, color: "var(--ink2)", marginLeft: 8 }}>{meta.author}</span>
           </div>
-          <div style={{ fontSize: 11, color: "var(--ink2)", background: "var(--soft)", border: "1px solid var(--line)", padding: "3px 10px", borderRadius: 999 }}>{meta.chapterNo}</div>
+          <div style={{ fontSize: 11, color: "var(--ink2)", background: "var(--soft)", border: "1px solid var(--line)", padding: "3px 10px", borderRadius: 999, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{curChapterTitle}</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button onClick={() => setBiMode((v) => !v)} title="所有段落显示中文对照" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12, padding: "6px 12px", borderRadius: 8, border: `1px solid ${biMode ? "var(--acc)" : "var(--line)"}`, background: biMode ? "var(--acc)" : "var(--page)", color: biMode ? "#FBF6EA" : "var(--ink)", letterSpacing: 1 }}>双语对照</button>
@@ -326,7 +593,7 @@ export default function ReaderView({
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <button onClick={() => setFs((v) => Math.max(14, v - 1))} style={{ cursor: "pointer", width: 28, height: 28, borderRadius: 7, border: "1px solid var(--line)", background: "transparent", color: "var(--ink)", fontFamily: "inherit", fontSize: 13 }}>A−</button>
                 <span style={{ fontSize: 12, color: "var(--ink2)", width: 30, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{fs}px</span>
-                <button onClick={() => setFs((v) => Math.min(22, v + 1))} style={{ cursor: "pointer", width: 28, height: 28, borderRadius: 7, border: "1px solid var(--line)", background: "transparent", color: "var(--ink)", fontFamily: "inherit", fontSize: 13 }}>A＋</button>
+                <button onClick={() => setFs((v) => Math.min(28, v + 1))} style={{ cursor: "pointer", width: 28, height: 28, borderRadius: 7, border: "1px solid var(--line)", background: "transparent", color: "var(--ink)", fontFamily: "inherit", fontSize: 13 }}>A＋</button>
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
@@ -346,10 +613,17 @@ export default function ReaderView({
                 ))}
               </div>
             </div>
-            <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 2.5, color: "var(--ink2)", marginBottom: 8 }}>排版</div>
+            <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 2.5, color: "var(--ink2)", marginBottom: 8 }}>翻页排布</div>
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => setLayout("page")} title="双页翻页 · 自动缩放铺满，不上下滚动" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "5px 10px", borderRadius: 7, border: `1px solid ${layout === "page" ? "var(--acc)" : "var(--line)"}`, background: layout === "page" ? "var(--acc)" : "transparent", color: layout === "page" ? "#FBF6EA" : "var(--ink)" }}>横排 · 翻页</button>
+                <button onClick={() => setCols(1)} title="一次显示一页 · 正文按真实字号、不缩小" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "5px 12px", borderRadius: 7, border: `1px solid ${cols === 1 ? "var(--acc)" : "var(--line)"}`, background: cols === 1 ? "var(--acc)" : "transparent", color: cols === 1 ? "#FBF6EA" : "var(--ink)" }}>单页</button>
+                <button onClick={() => setCols(2)} title="一次显示两页（书本对开），整体会等比缩小" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "5px 12px", borderRadius: 7, border: `1px solid ${cols === 2 ? "var(--acc)" : "var(--line)"}`, background: cols === 2 ? "var(--acc)" : "transparent", color: cols === 2 ? "#FBF6EA" : "var(--ink)" }}>双页</button>
+              </div>
+            </div>
+            <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 2.5, color: "var(--ink2)", marginBottom: 8 }}>模式</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => setLayout("page")} title="翻页 · 自动缩放铺满，不上下滚动" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "5px 10px", borderRadius: 7, border: `1px solid ${layout === "page" ? "var(--acc)" : "var(--line)"}`, background: layout === "page" ? "var(--acc)" : "transparent", color: layout === "page" ? "#FBF6EA" : "var(--ink)" }}>翻页</button>
                 <button onClick={() => setLayout("scroll")} title="单栏连续 · 像普通电子书一样向下滚动" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "5px 10px", borderRadius: 7, border: `1px solid ${layout === "scroll" ? "var(--acc)" : "var(--line)"}`, background: layout === "scroll" ? "var(--acc)" : "transparent", color: layout === "scroll" ? "#FBF6EA" : "var(--ink)" }}>滚动</button>
                 <span title="开发中" style={{ fontSize: 11, padding: "5px 10px", borderRadius: 7, border: "1px dashed var(--line)", color: "var(--ink2)" }}>竖排 右→左</span>
               </div>
@@ -379,27 +653,31 @@ export default function ReaderView({
           <div style={{ flex: 1, overflowY: "auto", padding: "12px 10px" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 8px 8px 8px" }}>
               <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 3, color: "var(--ink2)" }}>目次</span>
-              {meta.fmt === "TXT" && toc.length <= 1 && (
+              {!isSample && meta.fmt === "TXT" && chapters.length <= 1 && (
                 <button onClick={onAutoChapter} disabled={chaptering} title="用 AI 把整篇无章节文本自动切分成章节" style={{ cursor: chaptering ? "default" : "pointer", fontFamily: "inherit", fontSize: 10, letterSpacing: 1, padding: "3px 8px", borderRadius: 6, border: "1px solid var(--acc)", background: "transparent", color: "var(--acc)", opacity: chaptering ? 0.6 : 1 }}>{chaptering ? "分章中…" : "AI 智能分章"}</button>
               )}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {toc.map((ch, i) => {
-                const jumpable = typeof ch.spread === "number";
-                // 导入书按当前阅读位置高亮；示例书（无 spread）维持仅首章高亮的原型外观。
-                const active = jumpable ? i === curChapter : i === 0;
-                return (
-                  <div
-                    key={i}
-                    onClick={jumpable ? () => goTo(ch.spread!) : undefined}
-                    title={jumpable ? "跳转到本章" : "演示原型：仅第一章可读"}
-                    style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, padding: "7px 10px", borderRadius: 8, background: active ? "rgba(178,58,42,0.10)" : "transparent", cursor: jumpable ? "pointer" : "default" }}
-                  >
-                    <span style={{ fontFamily: "var(--font-mincho)", fontSize: 12, color: active ? "var(--acc)" : "var(--ink2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ch.label}</span>
-                    <span style={{ fontSize: 10, color: active ? "var(--acc)" : "var(--ink2)", flex: "none", fontVariantNumeric: "tabular-nums" }}>{jumpable ? (active ? "在读" : "") : i === 0 ? ch.meta : "未读"}</span>
-                  </div>
-                );
-              })}
+              {isSample
+                ? content!.toc.map((ch, i) => {
+                    const jumpable = typeof ch.spread === "number";
+                    const active = jumpable ? i === sampleCur : i === 0;
+                    return (
+                      <div key={i} onClick={jumpable ? () => goToSampleSpread(ch.spread!) : undefined} title={jumpable ? "跳转到本章" : "演示原型：仅第一章可读"} style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, padding: "7px 10px", borderRadius: 8, background: active ? "rgba(178,58,42,0.10)" : "transparent", cursor: jumpable ? "pointer" : "default" }}>
+                        <span style={{ fontFamily: "var(--font-mincho)", fontSize: 12, color: active ? "var(--acc)" : "var(--ink2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ch.label}</span>
+                        <span style={{ fontSize: 10, color: active ? "var(--acc)" : "var(--ink2)", flex: "none", fontVariantNumeric: "tabular-nums" }}>{jumpable ? (active ? "在读" : "") : i === 0 ? ch.meta : "未读"}</span>
+                      </div>
+                    );
+                  })
+                : chapters.map((ch) => {
+                    const active = ch.index === chIdx;
+                    return (
+                      <div key={ch.index} onClick={() => goToChapter(ch.index)} title="跳转到本章" style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, padding: "7px 10px", borderRadius: 8, background: active ? "rgba(178,58,42,0.10)" : "transparent", cursor: "pointer" }}>
+                        <span style={{ fontFamily: "var(--font-mincho)", fontSize: 12, color: active ? "var(--acc)" : "var(--ink2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ch.title}</span>
+                        <span style={{ fontSize: 10, color: active ? "var(--acc)" : "var(--ink2)", flex: "none", fontVariantNumeric: "tabular-nums" }}>{active ? "在读" : ""}</span>
+                      </div>
+                    );
+                  })}
             </div>
           </div>
           <div style={{ flex: "none", borderTop: "1px solid var(--line)", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -411,79 +689,80 @@ export default function ReaderView({
         {/* 中栏 · 书页 */}
         <div style={{ flex: 1, minWidth: 0, position: "relative", display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {layout === "page" ? (
-          <div ref={fitAreaRef} style={{ flex: 1, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", padding: "28px 64px 16px 64px", position: "relative" }}>
-            <button onClick={prev} title="上一页（←）" style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", width: 40, height: 40, borderRadius: 999, border: "1px solid var(--line)", background: "var(--page)", color: "var(--ink2)", cursor: "pointer", fontSize: 15, opacity: spread === 0 ? 0.35 : 1, boxShadow: "0 4px 12px -4px rgba(50,35,15,0.25)" }}>‹</button>
-            <button onClick={next} title="下一页（→）" style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", width: 40, height: 40, borderRadius: 999, border: "1px solid var(--line)", background: "var(--page)", color: "var(--ink2)", cursor: "pointer", fontSize: 15, opacity: spread === spreads.length - 1 ? 0.35 : 1, boxShadow: "0 4px 12px -4px rgba(50,35,15,0.25)" }}>›</button>
+            <div ref={fitAreaRef} style={{ flex: 1, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", padding: "28px 64px 16px 64px", position: "relative" }}>
+              <button onClick={prev} title="上一页（←）" style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", width: 40, height: 40, borderRadius: 999, border: "1px solid var(--line)", background: "var(--page)", color: "var(--ink2)", cursor: "pointer", fontSize: 15, opacity: atStart ? 0.35 : 1, boxShadow: "0 4px 12px -4px rgba(50,35,15,0.25)", zIndex: 6 }}>‹</button>
+              <button onClick={next} title="下一页（→）" style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", width: 40, height: 40, borderRadius: 999, border: "1px solid var(--line)", background: "var(--page)", color: "var(--ink2)", cursor: "pointer", fontSize: 15, opacity: atEnd ? 0.35 : 1, boxShadow: "0 4px 12px -4px rgba(50,35,15,0.25)", zIndex: 6 }}>›</button>
 
-            <div ref={fitBookRef} style={{ position: "relative", maxWidth: 880, minWidth: 760, width: "100%", transform: `scale(${fit})`, transformOrigin: "center center" }}>
-              <div style={{ position: "absolute", inset: 0, transform: "translate(5px,6px)", background: "var(--page)", borderRadius: 6, opacity: 0.55 }} />
-              <div style={{ position: "absolute", inset: 0, transform: "translate(2px,3px)", background: "var(--page)", borderRadius: 6, opacity: 0.8 }} />
-              <div style={{ position: "relative", display: "flex", alignItems: "stretch", background: "var(--page)", borderRadius: 6, boxShadow: "0 28px 64px -24px rgba(50,35,15,0.45)" }}>
-                <div style={{ position: "absolute", top: 0, bottom: 0, left: "50%", width: 64, transform: "translateX(-50%)", background: "linear-gradient(90deg,rgba(60,45,25,0) 0%,rgba(60,45,25,0.09) 47%,rgba(60,45,25,0.15) 50%,rgba(60,45,25,0.09) 53%,rgba(60,45,25,0) 100%)", pointerEvents: "none", zIndex: 2 }} />
-
-                {/* 左页 */}
-                <div style={{ flex: 1, minWidth: 0, padding: "42px 46px 30px 44px", display: "flex", flexDirection: "column", minHeight: 600 }}>
-                  {renderHead(sp.l)}
-                  <div style={{ flex: 1 }}>{sp.l.ps.map(renderPara)}</div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 18 }}>
-                    <span style={{ fontSize: 11, color: "var(--ink2)", fontVariantNumeric: "tabular-nums" }}>{sp.l.no}</span>
-                    <span style={{ fontFamily: "var(--font-mincho)", fontSize: 10, color: "var(--ink2)", letterSpacing: 2, opacity: 0.7 }}>{meta.title}</span>
-                  </div>
+              {!pagesReady ? (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, color: "var(--ink2)" }}>
+                  <div style={{ fontFamily: "var(--font-mincho)", fontSize: 15 }}>正在加载本章…</div>
+                  {chapterErr && <div style={{ fontSize: 12, color: "var(--acc)" }}>加载失败：{chapterErr}<button onClick={() => loadChapter(chIdx)} style={{ marginLeft: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "3px 9px", borderRadius: 6, border: "1px solid var(--acc)", background: "transparent", color: "var(--acc)" }}>重试</button></div>}
                 </div>
+              ) : (
+                <div ref={fitBookRef} style={{ position: "relative", maxWidth: cols === 2 ? 880 : 560, minWidth: cols === 2 ? 760 : 460, width: "100%", transform: `scale(${fit})`, transformOrigin: "center center" }}>
+                  <div style={{ position: "absolute", inset: 0, transform: "translate(5px,6px)", background: "var(--page)", borderRadius: 6, opacity: 0.55 }} />
+                  <div style={{ position: "absolute", inset: 0, transform: "translate(2px,3px)", background: "var(--page)", borderRadius: 6, opacity: 0.8 }} />
+                  <div style={{ position: "relative", display: "flex", alignItems: "stretch", background: "var(--page)", borderRadius: 6, boxShadow: "0 28px 64px -24px rgba(50,35,15,0.45)" }}>
+                    {cols === 2 && (
+                      <div style={{ position: "absolute", top: 0, bottom: 0, left: "50%", width: 64, transform: "translateX(-50%)", background: "linear-gradient(90deg,rgba(60,45,25,0) 0%,rgba(60,45,25,0.09) 47%,rgba(60,45,25,0.15) 50%,rgba(60,45,25,0.09) 53%,rgba(60,45,25,0) 100%)", pointerEvents: "none", zIndex: 2 }} />
+                    )}
 
-                {/* 右页 */}
-                <div style={{ flex: 1, minWidth: 0, padding: "42px 44px 30px 46px", display: "flex", flexDirection: "column", minHeight: 600 }}>
-                  {renderHead(sp.r)}
-                  <div style={{ flex: 1 }}>
-                    {sp.r.ps.map(renderPara)}
-                    {sp.r.illus && (
-                      <div style={{ height: "100%", minHeight: 440, display: "flex", flexDirection: "column" }}>
-                        <div style={{ flex: 1, border: "1px dashed var(--acc)", borderRadius: 10, background: "linear-gradient(170deg,rgba(39,53,79,0.06),rgba(178,58,42,0.04))", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: 24, textAlign: "center" }}>
-                          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--acc)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 5.8L20 10.7l-6.1 1.9L12 18.4l-1.9-5.8L4 10.7l6.1-1.9z" /><path d="M19 3l0.7 2.1L21.8 5.8l-2.1 0.7L19 8.6l-0.7-2.1L16.2 5.8l2.1-0.7z" /></svg>
-                          <div style={{ fontFamily: "var(--font-mincho)", fontSize: 15, fontWeight: 600, color: "var(--ink)", letterSpacing: 1 }}>AI 插画 · 名场面</div>
-                          <div style={{ fontSize: 12, color: "var(--ink2)", lineHeight: 1.8, maxWidth: 240 }}>「点名」— 基于本章文本与情绪曲线生成的轻小说风格插画将插入此处（概念位）</div>
-                          <button style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, letterSpacing: 1, padding: "7px 16px", borderRadius: 8, border: "1px solid var(--acc)", background: "transparent", color: "var(--acc)" }}>生成插画</button>
+                    {/* 左页（单页模式下即唯一页） */}
+                    <div style={{ flex: 1, minWidth: 0, padding: cols === 2 ? "42px 46px 30px 44px" : "48px 56px 32px 56px", display: "flex", flexDirection: "column", minHeight: 600 }}>
+                      {renderPageBody(left)}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 18 }}>
+                        <span style={{ fontSize: 11, color: "var(--ink2)", fontVariantNumeric: "tabular-nums" }}>{left?.no ?? ""}</span>
+                        <span style={{ fontFamily: "var(--font-mincho)", fontSize: 10, color: "var(--ink2)", letterSpacing: 2, opacity: 0.7 }}>{meta.title}</span>
+                      </div>
+                    </div>
+
+                    {/* 右页（仅双页模式） */}
+                    {cols === 2 && (
+                      <div style={{ flex: 1, minWidth: 0, padding: "42px 44px 30px 46px", display: "flex", flexDirection: "column", minHeight: 600 }}>
+                        {renderPageBody(right)}
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 18 }}>
+                          <span style={{ fontFamily: "var(--font-mincho)", fontSize: 10, color: "var(--ink2)", letterSpacing: 2, opacity: 0.7 }}>{curChapterTitle}</span>
+                          <span style={{ fontSize: 11, color: "var(--ink2)", fontVariantNumeric: "tabular-nums" }}>{right?.no ?? ""}</span>
                         </div>
-                        <div style={{ textAlign: "center", marginTop: 20, fontFamily: "var(--font-mincho)", color: "var(--ink2)", fontSize: 13, letterSpacing: 6 }}>✕ ✕ ✕</div>
                       </div>
                     )}
                   </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 18 }}>
-                    <span style={{ fontFamily: "var(--font-mincho)", fontSize: 10, color: "var(--ink2)", letterSpacing: 2, opacity: 0.7 }}>{meta.chapterNo}</span>
-                    <span style={{ fontSize: 11, color: "var(--ink2)", fontVariantNumeric: "tabular-nums" }}>{sp.r.no}</span>
+                </div>
+              )}
+
+              {ambience && (
+                <div style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "radial-gradient(120% 90% at 50% 0%,rgba(24,38,70,0.20),rgba(24,38,70,0.05) 55%,rgba(178,58,42,0.03))", zIndex: 5 }}>
+                  <div style={{ position: "absolute", left: "24px", bottom: 18, display: "flex", alignItems: "center", gap: 8, background: "rgba(20,26,42,0.82)", color: "#D8DEF0", borderRadius: 999, padding: "7px 14px", fontSize: 11, letterSpacing: 1 }}>
+                    <span style={{ width: 6, height: 6, borderRadius: 99, background: "#8FB4FF", boxShadow: "0 0 8px rgba(143,180,255,0.9)" }} />
+                    <span>氛围 · 星月夜 — 环境音《galaxy_night》试听中 · 概念演示</span>
                   </div>
                 </div>
-              </div>
+              )}
             </div>
-
-            {ambience && (
-              <div style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "radial-gradient(120% 90% at 50% 0%,rgba(24,38,70,0.20),rgba(24,38,70,0.05) 55%,rgba(178,58,42,0.03))", zIndex: 5 }}>
-                <div style={{ position: "absolute", left: "24px", bottom: 18, display: "flex", alignItems: "center", gap: 8, background: "rgba(20,26,42,0.82)", color: "#D8DEF0", borderRadius: 999, padding: "7px 14px", fontSize: 11, letterSpacing: 1 }}>
-                  <span style={{ width: 6, height: 6, borderRadius: 99, background: "#8FB4FF", boxShadow: "0 0 8px rgba(143,180,255,0.9)" }} />
-                  <span>氛围 · 星月夜 — 环境音《galaxy_night》试听中 · 概念演示</span>
-                </div>
-              </div>
-            )}
-          </div>
           ) : (
             <div style={{ flex: 1, overflowY: "auto", position: "relative" }}>
               <div style={{ maxWidth: 720, margin: "0 auto", padding: "44px 44px 72px 44px" }}>
-                {spreads.map((s, si) => (
-                  <div key={si}>
-                    {renderHead(s.l)}
-                    {s.l.ps.map(renderPara)}
-                    {renderHead(s.r)}
-                    {s.r.ps.map(renderPara)}
+                {chapters.map((c) => {
+                  const pgs = chapterPages[c.index];
+                  if (!pgs) return null;
+                  return <div key={c.index}>{pgs.map((pg, k) => <Fragment key={k}>{renderHead(pg)}{pg.ps.map(renderPara)}</Fragment>)}</div>;
+                })}
+                {nextUnloaded >= 0 ? (
+                  <div ref={scrollSentinelRef} style={{ textAlign: "center", padding: "24px 0", fontSize: 12, color: "var(--ink2)" }}>
+                    {chapterErr ? <>加载失败：{chapterErr} <button onClick={() => loadChapter(nextUnloaded)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "3px 9px", borderRadius: 6, border: "1px solid var(--acc)", background: "transparent", color: "var(--acc)" }}>重试</button></> : "加载更多…"}
                   </div>
-                ))}
-                <div style={{ textAlign: "center", marginTop: 8, fontFamily: "var(--font-mincho)", color: "var(--ink2)", fontSize: 13, letterSpacing: 6, opacity: 0.7 }}>✕ ✕ ✕</div>
+                ) : (
+                  <div style={{ textAlign: "center", marginTop: 8, fontFamily: "var(--font-mincho)", color: "var(--ink2)", fontSize: 13, letterSpacing: 6, opacity: 0.7 }}>✕ ✕ ✕</div>
+                )}
               </div>
             </div>
           )}
 
           {/* 底部进度 */}
           <div style={{ flex: "none", display: "flex", alignItems: "center", justifyContent: "center", gap: 18, padding: "10px 24px 14px 24px" }}>
-            <span style={{ fontSize: 11, color: "var(--ink2)", fontVariantNumeric: "tabular-nums" }}>{sp.l.no}–{sp.r.no} / {total}</span>
+            <span style={{ fontSize: 11, color: "var(--ink2)", fontVariantNumeric: "tabular-nums" }}>
+              {chapters.length > 1 ? `第 ${chIdx + 1}/${chapters.length} 章 · ` : ""}{cols === 2 && right ? `p${left?.no ?? "–"}-${right.no}` : `p${left?.no ?? "–"}`}
+            </span>
             <div style={{ width: 280, height: 3, borderRadius: 99, background: "var(--line)", position: "relative" }}>
               <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${bookPct}%`, borderRadius: 99, background: "var(--acc)" }} />
               <div style={{ position: "absolute", left: `${bookPct}%`, top: -5, width: 2, height: 13, background: "var(--acc)", borderRadius: 2 }} />
@@ -507,45 +786,68 @@ export default function ReaderView({
             </div>
           </div>
           <div style={{ flex: 1, overflowY: "auto", padding: 16, borderTop: "1px solid var(--line)" }}>
-            {tab === "chars" && (hasAI ? (
+            {tab === "chars" && (
               <>
-                <div style={{ fontSize: 10, color: "var(--ink2)", marginBottom: 8, letterSpacing: 1 }}>关系图随阅读进度生长 · 当前基于 p.12–17</div>
-                <div style={{ background: "var(--page)", border: "1px solid var(--line)", borderRadius: 12, padding: 6 }}>
-                  <svg viewBox="0 0 288 232" style={{ width: "100%", display: "block" }}>
-                    {edges.map((e, i) => {
-                      const mx = (e.a[0] + e.b[0]) / 2, my = (e.a[1] + e.b[1]) / 2;
-                      return (
-                        <g key={i}>
-                          <line x1={e.a[0]} y1={e.a[1]} x2={e.b[0]} y2={e.b[1]} stroke="var(--line)" strokeWidth={1.5} />
-                          <rect x={mx - 17} y={my - 8} width={34} height={16} rx={8} fill="var(--soft)" stroke="var(--line)" strokeWidth={1} />
-                          <text x={mx} y={my + 3.5} textAnchor="middle" fontSize={9} fill="var(--ink2)">{e.label}</text>
-                        </g>
-                      );
-                    })}
-                    {nodes.map((n) => {
-                      const sel = n.id === selChar;
-                      return (
-                        <g key={n.id} onClick={() => setSelChar(n.id)} style={{ cursor: "pointer" }}>
-                          <circle cx={n.x} cy={n.y} r={21} fill="var(--page)" stroke={n.locked ? "var(--line)" : sel ? "var(--acc)" : "var(--ink2)"} strokeWidth={sel ? 2.5 : 1.5} strokeDasharray={n.locked ? "4 4" : "none"} />
-                          <text x={n.x} y={n.y + 4} textAnchor="middle" fontSize={11} fontWeight={600} fill={n.locked ? "var(--ink2)" : sel ? "var(--acc)" : "var(--ink)"} fontFamily="var(--font-mincho)">{chars[n.id].glyph}</text>
-                          <text x={n.x} y={n.y + 36} textAnchor="middle" fontSize={9.5} fill={sel ? "var(--acc)" : "var(--ink2)"}>{n.name}</text>
-                        </g>
-                      );
-                    })}
-                  </svg>
-                </div>
-                {chars[selChar] && (
-                  <div style={{ marginTop: 12, background: "var(--page)", border: "1px solid var(--line)", borderRadius: 12, padding: 14 }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                      <span style={{ fontFamily: "var(--font-mincho)", fontSize: 15, fontWeight: 600, color: "var(--ink)" }}>{chars[selChar].jp}</span>
-                      <span style={{ fontSize: 11, color: "var(--ink2)" }}>{chars[selChar].zh}</span>
-                      <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--ink2)", border: "1px solid var(--line)", borderRadius: 4, padding: "1px 6px" }}>初登场 {chars[selChar].first}</span>
+                {!isSample && (() => {
+                  const filled = !graph || graphStale;
+                  const label = graphState.loading ? "生成中…" : !graph ? "生成人物关系网" : graphStale ? "更新到最新进度" : "重新生成";
+                  return (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      <button onClick={onGenGraph} disabled={graphState.loading} style={{ cursor: graphState.loading ? "default" : "pointer", fontFamily: "inherit", fontSize: 11, letterSpacing: 1, padding: "6px 12px", borderRadius: 8, border: "1px solid var(--acc)", background: filled ? "var(--acc)" : "transparent", color: filled ? "#FBF6EA" : "var(--acc)", opacity: graphState.loading ? 0.6 : 1 }}>{label}</button>
+                      <span style={{ fontSize: 10, color: graphStale ? "var(--acc)" : "var(--ink2)" }}>{graphStale ? "已读到更新位置 · 可刷新" : graph ? "已缓存 · 读到 " + bookPct + "%" : "基于已读 " + bookPct + "%"}</span>
                     </div>
-                    <p style={{ margin: "8px 0 0 0", fontSize: 12, lineHeight: 1.9, color: "var(--ink)", opacity: 0.85 }}>{chars[selChar].text}</p>
-                  </div>
+                  );
+                })()}
+                {graphState.err && (
+                  <div style={{ marginBottom: 10, fontSize: 11, color: "var(--acc)", background: "var(--page)", border: "1px solid var(--line)", borderRadius: 8, padding: "8px 10px" }}>{graphState.err}</div>
+                )}
+                {hasGraph ? (
+                  <>
+                    <div style={{ fontSize: 10, color: "var(--ink2)", marginBottom: 8, letterSpacing: 1 }}>
+                      {isSample ? "关系图随阅读进度生长 · 当前基于 p.12–17" : "只含你已读到的人物 · 读得越多越完整"}
+                    </div>
+                    <div style={{ background: "var(--page)", border: "1px solid var(--line)", borderRadius: 12, padding: 6 }}>
+                      <svg viewBox="0 0 288 232" style={{ width: "100%", display: "block" }}>
+                        {graphData!.edges.map((e, i) => {
+                          const mx = (e.a[0] + e.b[0]) / 2, my = (e.a[1] + e.b[1]) / 2;
+                          return (
+                            <g key={i}>
+                              <line x1={e.a[0]} y1={e.a[1]} x2={e.b[0]} y2={e.b[1]} stroke="var(--line)" strokeWidth={1.5} />
+                              <rect x={mx - 18} y={my - 8} width={36} height={16} rx={8} fill="var(--soft)" stroke="var(--line)" strokeWidth={1} />
+                              <text x={mx} y={my + 3.5} textAnchor="middle" fontSize={9} fill="var(--ink2)">{e.label}</text>
+                            </g>
+                          );
+                        })}
+                        {graphData!.nodes.map((n) => {
+                          const sel = n.id === selChar;
+                          return (
+                            <g key={n.id} onClick={() => setSelChar(n.id)} style={{ cursor: "pointer" }}>
+                              <circle cx={n.x} cy={n.y} r={21} fill="var(--page)" stroke={n.locked ? "var(--line)" : sel ? "var(--acc)" : "var(--ink2)"} strokeWidth={sel ? 2.5 : 1.5} strokeDasharray={n.locked ? "4 4" : "none"} />
+                              <text x={n.x} y={n.y + 4} textAnchor="middle" fontSize={11} fontWeight={600} fill={n.locked ? "var(--ink2)" : sel ? "var(--acc)" : "var(--ink)"} fontFamily="var(--font-mincho)">{graphData!.chars[n.id]?.glyph}</text>
+                              <text x={n.x} y={n.y + 36} textAnchor="middle" fontSize={9.5} fill={sel ? "var(--acc)" : "var(--ink2)"}>{n.name}</text>
+                            </g>
+                          );
+                        })}
+                      </svg>
+                    </div>
+                    {graphData!.chars[selChar] && (
+                      <div style={{ marginTop: 12, background: "var(--page)", border: "1px solid var(--line)", borderRadius: 12, padding: 14 }}>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                          <span style={{ fontFamily: "var(--font-mincho)", fontSize: 15, fontWeight: 600, color: "var(--ink)" }}>{graphData!.chars[selChar].jp}</span>
+                          <span style={{ fontSize: 11, color: "var(--ink2)" }}>{graphData!.chars[selChar].zh}</span>
+                          <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--ink2)", border: "1px solid var(--line)", borderRadius: 4, padding: "1px 6px" }}>初登场 {graphData!.chars[selChar].first}</span>
+                        </div>
+                        <p style={{ margin: "8px 0 0 0", fontSize: 12, lineHeight: 1.9, color: "var(--ink)", opacity: 0.85 }}>{graphData!.chars[selChar].text}</p>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  !graphState.loading && !graphState.err && (
+                    <Placeholder text={isSample ? "人物关系图谱将随阅读进度自动生长。" : "点上方「生成人物关系网」，AI 会基于你已读到的位置画出登场人物与关系，不剧透。"} />
+                  )
                 )}
               </>
-            ) : <Placeholder text="人物关系图谱将随阅读进度自动生长。导入书的图谱生成功能开发中。" />)}
+            )}
 
             {tab === "enc" && (enc.length ? (
               <>
@@ -571,7 +873,7 @@ export default function ReaderView({
               </>
             ) : <Placeholder text="世界观百科会随阅读进度自动建条目并解锁。导入书功能开发中。" />)}
 
-            {tab === "emo" && (hasAI ? (
+            {tab === "emo" && (isSample ? (
               <>
                 <div style={{ fontSize: 10, color: "var(--ink2)", marginBottom: 8, letterSpacing: 1 }}>第一章情绪曲线 · 未读部分已折叠</div>
                 <div style={{ background: "var(--page)", border: "1px solid var(--line)", borderRadius: 12, padding: "12px 8px 4px 8px" }}>
@@ -606,15 +908,15 @@ export default function ReaderView({
               <>
                 <div style={{ fontSize: 10, color: "var(--ink2)", marginBottom: 10, letterSpacing: 1, lineHeight: 1.7 }}>回答仅基于你已读到的位置（全书 {bookPct}%），不会剧透。</div>
                 <input placeholder="问点什么…（回车提交）" onKeyDown={(e) => { if (e.key === "Enter" && e.currentTarget.value.trim()) { onQaCustom(e.currentTarget.value.trim()); e.currentTarget.value = ""; } }} style={{ width: "100%", boxSizing: "border-box", fontFamily: "inherit", fontSize: 12, padding: "10px 12px", borderRadius: 10, border: "1px solid var(--line)", background: "var(--page)", color: "var(--ink)", outline: "none" }} />
-                {qa.length > 0 && (
+                {sampleQa.length > 0 && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
-                    {qa.map((q) => (
+                    {sampleQa.map((q) => (
                       <button key={q.id} onClick={() => { setQaId(q.id); setQaLive(null); }} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "6px 11px", borderRadius: 999, border: `1px solid ${q.id === qaId ? "var(--acc)" : "var(--line)"}`, background: q.id === qaId ? "var(--acc)" : "var(--page)", color: q.id === qaId ? "#FBF6EA" : q.spoiler ? "var(--ink2)" : "var(--ink)" }}>{q.q}</button>
                     ))}
                   </div>
                 )}
                 {(() => {
-                  const preset = qaId ? qa.find((q) => q.id === qaId) : null;
+                  const preset = qaId ? sampleQa.find((q) => q.id === qaId) : null;
                   if (preset) {
                     return (
                       <div style={{ marginTop: 12, background: "var(--page)", border: `1px solid ${preset.spoiler ? "var(--acc)" : "var(--line)"}`, borderRadius: 12, padding: 14 }}>
@@ -642,16 +944,22 @@ export default function ReaderView({
                 <div style={{ background: "var(--page)", border: "1px solid var(--line)", borderRadius: 12, padding: 16 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
                     <span style={{ fontFamily: "var(--font-mincho)", fontSize: 14, fontWeight: 600, color: "var(--acc)" }}>前情提要</span>
-                    <span style={{ fontSize: 10, color: "var(--ink2)", marginLeft: "auto" }}>距上次阅读 12 天</span>
+                    <span style={{ fontSize: 10, color: "var(--ink2)", marginLeft: "auto" }}>读到 {bookPct}%{recapCached ? " · 缓存" : ""}</span>
                   </div>
-                  <p style={{ margin: 0, fontSize: 12.5, lineHeight: 2.0, color: "var(--ink)", opacity: 0.88 }}>{recap || recapLive?.text || "点击下方按钮，基于你已读的内容生成无剧透前情提要。"}</p>
+                  <p style={{ margin: 0, fontSize: 12.5, lineHeight: 2.0, color: "var(--ink)", opacity: 0.88 }}>{sampleRecap || recapLive?.text || "点击下方按钮，基于你已读的内容生成无剧透前情提要。"}</p>
                   <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 10, color: "var(--ink2)", background: "var(--soft)", border: "1px solid var(--line)", borderRadius: 4, padding: "2px 7px" }}>停在 {sp.l.no}–{sp.r.no}</span>
+                    <span style={{ fontSize: 10, color: "var(--ink2)", background: "var(--soft)", border: "1px solid var(--line)", borderRadius: 4, padding: "2px 7px" }}>停在 {curChapterTitle}</span>
                     <span style={{ fontSize: 10, color: "var(--ink2)", background: "var(--soft)", border: "1px solid var(--line)", borderRadius: 4, padding: "2px 7px" }}>无剧透 · 仅复述已读</span>
+                    {recapStale && <span style={{ fontSize: 10, color: "var(--acc)", background: "var(--soft)", border: "1px solid var(--acc)", borderRadius: 4, padding: "2px 7px" }}>已读到更新位置 · 可刷新</span>}
                   </div>
-                  {!recap && (
-                    <button onClick={onRecap} disabled={recapLive?.loading} style={{ cursor: "pointer", width: "100%", marginTop: 14, fontFamily: "inherit", fontSize: 12, letterSpacing: 2, padding: "9px 0", borderRadius: 9, border: "none", background: "var(--acc)", color: "#FBF6EA" }}>{recapLive?.loading ? "生成中…" : "生成前情提要"}</button>
-                  )}
+                  {!sampleRecap && (() => {
+                    const has = !!recapLive?.text && !recapLive.loading;
+                    const label = recapLive?.loading ? "生成中…" : !has ? "生成前情提要" : recapStale ? "更新前情提要" : "重新生成";
+                    const filled = !has || recapStale;
+                    return (
+                      <button onClick={() => onRecap(has)} disabled={recapLive?.loading} style={{ cursor: recapLive?.loading ? "default" : "pointer", width: "100%", marginTop: 14, fontFamily: "inherit", fontSize: 12, letterSpacing: 2, padding: "9px 0", borderRadius: 9, border: "1px solid var(--acc)", background: filled ? "var(--acc)" : "transparent", color: filled ? "#FBF6EA" : "var(--acc)" }}>{label}</button>
+                    );
+                  })()}
                 </div>
               </>
             )}
