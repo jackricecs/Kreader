@@ -104,6 +104,28 @@ export function buildCharGraphPrompt(readContext: string): ChatMessage[] {
   ];
 }
 
+/**
+ * 世界观百科：只依据【已读正文】整理已出现的世界观词条（地名 / 组织 / 设定 / 道具 / 概念…），
+ * 只回 JSON 数组，便于服务端解析。与人物关系网同源——绝不引入未读词条，避免剧透。
+ */
+export function buildEncPrompt(readContext: string): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content:
+        "你是小说世界观百科助手。只能依据下面【已读正文】，整理已经出现过的世界观词条" +
+        "（地名、组织/势力、专有名词、设定、道具、概念等，至多 10 条）。" +
+        "绝不可引入尚未读到的内容，不得臆测或剧透后续。\n" +
+        "只输出一个 JSON 数组，元素格式严格如下：\n" +
+        '[{"name":"词条名（用正文中的称呼）","category":"类别（地名/组织/设定/道具/概念 等2-4字）","desc":"一两句话解释，仅基于已读","first":"首次出现的简短线索"}]\n' +
+        "若已读内容信息太少，可少于 10 条甚至空数组 []。" +
+        "不要输出 JSON 以外的任何文字、解释或代码块标记。\n\n【已读正文】\n" +
+        readContext,
+    },
+    { role: "user", content: "请输出已读范围内的世界观百科 JSON 数组。" },
+  ];
+}
+
 /** 前情提要：同样只基于已读内容，分「最近一章 + 全局主线」。 */
 export function buildRecapPrompt(readContext: string): ChatMessage[] {
   return [

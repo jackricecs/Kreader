@@ -47,6 +47,7 @@ function defaultForCapability(cap: AICapability): ProviderId {
     recap: env("AI_PROVIDER_RECAP", "deepseek"),
     segment: env("AI_PROVIDER_SEGMENT", "deepseek"),
     chargraph: env("AI_PROVIDER_CHARGRAPH", "deepseek"),
+    enc: env("AI_PROVIDER_ENC", "deepseek"),
   };
   return (map[cap] as ProviderId) ?? "qwen";
 }

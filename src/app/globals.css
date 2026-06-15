@@ -53,3 +53,31 @@ body {
 ::selection {
   background: rgba(178, 58, 42, 0.18);
 }
+
+/* ── 简约滚动条：细、无箭头按钮、半透明圆角胶囊、悬停渐显，跟随主题 ── */
+* {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: color-mix(in srgb, var(--ink2) 42%, transparent) transparent;
+}
+*::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  /* 3.5px 透明边 + padding-box → 视觉上约 4px 的细胶囊，四周留白更透气 */
+  border: 3.5px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--ink2) 36%, transparent);
+  transition: background-color 0.18s ease;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--ink2) 68%, transparent);
+}
+*::-webkit-scrollbar-thumb:active {
+  background-color: color-mix(in srgb, var(--ink2) 82%, transparent);
+}

@@ -36,4 +36,4 @@ export interface AIProvider {
 }
 
 /** Kreader 里需要指派模型的功能点。每个都可在设置里独立选 provider。 */
-export type AICapability = "translate" | "qa" | "recap" | "segment" | "chargraph";
+export type AICapability = "translate" | "qa" | "recap" | "segment" | "chargraph" | "enc";

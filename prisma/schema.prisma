@@ -27,6 +27,7 @@ model Book {
   progress  ReadingProgress?
   charGraph CharGraphCache?
   recap     RecapCache?
+  encCache  EncCache?
 }
 
 // AI 前情提要缓存：每本一份，命中规则同人物关系网（仅当当前已读 upto >= 缓存 upto 时返回，防剧透）。
@@ -46,6 +47,16 @@ model CharGraphCache {
   bookId    String   @unique
   upto      Int // 生成时的已读全局段落上界（globalIndex）
   data      String // JSON: { characters, relations }
+  updatedAt DateTime @updatedAt
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+}
+
+// AI 世界观百科缓存：每本一份，命中规则同人物关系网（仅当当前已读 upto >= 缓存 upto 时返回，防剧透）。
+model EncCache {
+  id        String   @id @default(cuid())
+  bookId    String   @unique
+  upto      Int // 生成时的已读全局段落上界
+  data      String // JSON: EncItem[]
   updatedAt DateTime @updatedAt
   book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
 }

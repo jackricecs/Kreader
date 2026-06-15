@@ -43,6 +43,8 @@ interface WC { key: string; x: number; y: number }
 interface TState { loading: boolean; text: string }
 interface GraphChar { id: string; name: string; glyph: string; desc: string; first: string }
 interface GraphRel { a: string; b: string; label: string }
+interface EncItem { name: string; category: string; desc: string; first: string }
+interface SavedPos { chIdx: number; pi: number; scrollTop: number }
 interface GraphData { nodes: CharNode[]; edges: CharEdge[]; chars: Record<string, CharBio> }
 
 // 把示例书的全局跨页摊平成「单页」序列，丢掉末尾空白页。
@@ -128,7 +130,7 @@ export default function ReaderView({
   const [recapLive, setRecapLive] = useState<TState | null>(null);
   const [saved, setSaved] = useState<Record<string, boolean>>({});
   const [vocabCount, setVocabCount] = useState(8);
-  const [layout, setLayout] = useState<"page" | "scroll">("page");
+  const [layout, setLayout] = useState<"page" | "scroll">("scroll"); // 默认滚动模式
 
   // 已加载章节的页与段落（示例书初始即全量）。
   const [chapterPages, setChapterPages] = useState<Record<number, SpreadSide[]>>(
@@ -139,6 +141,12 @@ export default function ReaderView({
   const chapterPagesRef = useRef(chapterPages);
   useEffect(() => { chapterPagesRef.current = chapterPages; }, [chapterPages]);
   const loadingRef = useRef<Set<number>>(new Set());
+
+  // ── 阅读位置记忆（按 bookId 存 localStorage，翻页 / 滚动通用）──
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const posKey = `kreader-pos-${meta.id}`;
+  const restorePos = useRef<SavedPos | null>(null);
+  const posReady = useRef(false); // 恢复完成或无需恢复后，才开始记录新位置
 
   // 排版偏好持久化（翻页 / 滚动；单页 / 双页）
   useEffect(() => {
@@ -151,6 +159,56 @@ export default function ReaderView({
   useEffect(() => { window.localStorage.setItem("kreader-cols", String(cols)); }, [cols]);
   // 双页对齐：切到双页时把奇数页索引归到偶数边。
   useEffect(() => { if (cols === 2 && pi % 2 === 1) setPi((p) => Math.max(0, p - 1)); }, [cols, pi]);
+
+  // 进入时读取上次位置：先定位章节，pi / scrollTop 待章节加载后再落位。
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(posKey);
+      if (raw) {
+        const p = JSON.parse(raw) as Partial<SavedPos>;
+        if (p && typeof p.chIdx === "number") {
+          const ci = Math.min(Math.max(0, p.chIdx || 0), Math.max(0, chapters.length - 1));
+          restorePos.current = { chIdx: ci, pi: p.pi || 0, scrollTop: p.scrollTop || 0 };
+          if (ci) setChIdx(ci);
+          return;
+        }
+      }
+    } catch { /* 忽略损坏的本地数据 */ }
+    posReady.current = true; // 无历史位置：直接允许记录
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posKey]);
+
+  // 记录当前位置（翻页模式）。
+  useEffect(() => {
+    if (!posReady.current || layout !== "page") return;
+    try { window.localStorage.setItem(posKey, JSON.stringify({ chIdx, pi, scrollTop: 0 })); } catch { /* 配额满等忽略 */ }
+  }, [chIdx, pi, layout, posKey]);
+
+  // 记录当前位置（滚动模式）：节流写入顶部可见章节与 scrollTop。
+  useEffect(() => {
+    if (layout !== "scroll") return;
+    const el = scrollRef.current;
+    if (!el) return;
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const onScroll = () => {
+      if (!posReady.current) return;
+      if (t) clearTimeout(t);
+      t = setTimeout(() => {
+        const cont = scrollRef.current;
+        if (!cont) return;
+        const top = cont.getBoundingClientRect().top;
+        let cur = 0;
+        for (const c of chapters) {
+          const node = document.getElementById(`kr-ch-${c.index}`);
+          if (!node) break; // 滚动模式按序加载，未加载的在末尾
+          if (node.getBoundingClientRect().top - top <= 100) cur = c.index; else break;
+        }
+        try { window.localStorage.setItem(posKey, JSON.stringify({ chIdx: cur, pi: 0, scrollTop: cont.scrollTop })); } catch { /* 忽略 */ }
+      }, 300);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => { el.removeEventListener("scroll", onScroll); if (t) clearTimeout(t); };
+  }, [layout, posKey, chapters]);
 
   // ── 章节懒加载（导入书）──
   const loadChapter = useCallback(async (i: number) => {
@@ -178,6 +236,32 @@ export default function ReaderView({
   // 进入 / 切换当前章时确保已加载，并后台预取下一章。
   useEffect(() => { if (!isSample) loadChapter(chIdx); }, [isSample, chIdx, loadChapter]);
   useEffect(() => { if (!isSample && chIdx + 1 < chapters.length) loadChapter(chIdx + 1); }, [isSample, chIdx, chapters.length, loadChapter]);
+
+  // 章节加载到位后，落位到上次的页 / 滚动位置（一次性）。
+  useEffect(() => {
+    const rp = restorePos.current;
+    if (!rp) return;
+    if (layout === "page") {
+      if (!(rp.chIdx in chapterPages)) return; // 等本章加载完
+      const pgs = chapterPages[rp.chIdx];
+      setPi(Math.min(rp.pi, pgs.length ? pgs.length - 1 : 0));
+      restorePos.current = null;
+      posReady.current = true;
+      return;
+    }
+    // 滚动模式：先把 0..chIdx 顺序加载齐，避免上方内容补入后位置跳动。
+    for (let i = 0; i <= rp.chIdx; i++) { if (!(i in chapterPages)) { loadChapter(i); return; } }
+    if (!scrollRef.current) return;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      if (el) {
+        if (rp.scrollTop > 0) el.scrollTop = rp.scrollTop;
+        else if (rp.chIdx > 0) document.getElementById(`kr-ch-${rp.chIdx}`)?.scrollIntoView({ block: "start" });
+      }
+      restorePos.current = null;
+      posReady.current = true;
+    }));
+  }, [chapterPages, layout, loadChapter]);
 
   const pages = useMemo(() => chapterPages[chIdx] ?? [], [chapterPages, chIdx]);
   const pagesReady = chIdx in chapterPages;
@@ -466,6 +550,49 @@ export default function ReaderView({
     if (graphData && graphData.nodes.length && !graphData.chars[selChar]) setSelChar(graphData.nodes[0].id);
   }, [graphData, selChar]);
 
+  // ── AI 世界观百科（导入书）·带缓存（命中规则同人物关系网）──
+  const [encData, setEncData] = useState<EncItem[] | null>(null);
+  const [encUpto, setEncUpto] = useState<number | null>(null); // 当前百科基于的已读段落上界
+  const [encState, setEncState] = useState<{ loading: boolean; err: string | null }>({ loading: false, err: null });
+  const encStale = encData != null && encUpto != null && readParas - 1 > encUpto;
+
+  // 进入「百科」Tab 且内存无数据时，先尝试命中服务端缓存（不调用模型）。
+  const encCacheTried = useRef(false);
+  useEffect(() => {
+    if (isSample || tab !== "enc" || encData || encState.loading) return;
+    const upto = readParas - 1;
+    if (upto < 0 || encCacheTried.current) return;
+    encCacheTried.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/ai/encyclopedia?bookId=${meta.id}&upto=${upto}`);
+        const data = await res.json().catch(() => ({}));
+        if (cancelled || !res.ok || !data.cached || !data.entries?.length) return;
+        setEncData(data.entries);
+        setEncUpto(data.upto ?? upto);
+      } catch { /* 缓存读取失败不打扰用户，按钮仍可手动生成 */ }
+    })();
+    return () => { cancelled = true; };
+  }, [isSample, tab, encData, encState.loading, readParas, meta.id]);
+
+  const onGenEnc = async () => {
+    setEncState({ loading: true, err: null });
+    try {
+      const upto = readParas - 1;
+      if (isSample || upto < 0) { setEncState({ loading: false, err: "还没读到正文，先往下读一点再生成" }); return; }
+      const res = await fetch("/api/ai/encyclopedia", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bookId: meta.id, upto }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? `${res.status}`);
+      if (!data.entries?.length) { setEncState({ loading: false, err: "已读内容里还没识别到明确世界观词条" }); return; }
+      setEncData(data.entries);
+      setEncUpto(upto);
+      setEncState({ loading: false, err: null });
+    } catch (e) {
+      setEncState({ loading: false, err: (e as Error).message });
+    }
+  };
+
   const T = THEMES[theme];
   const rootVars = {
     "--app": T.app, "--page": T.page, "--ink": T.ink, "--ink2": T.ink2,
@@ -740,12 +867,12 @@ export default function ReaderView({
               )}
             </div>
           ) : (
-            <div style={{ flex: 1, overflowY: "auto", position: "relative" }}>
+            <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", position: "relative" }}>
               <div style={{ maxWidth: 720, margin: "0 auto", padding: "44px 44px 72px 44px" }}>
                 {chapters.map((c) => {
                   const pgs = chapterPages[c.index];
                   if (!pgs) return null;
-                  return <div key={c.index}>{pgs.map((pg, k) => <Fragment key={k}>{renderHead(pg)}{pg.ps.map(renderPara)}</Fragment>)}</div>;
+                  return <div key={c.index} id={`kr-ch-${c.index}`}>{pgs.map((pg, k) => <Fragment key={k}>{renderHead(pg)}{pg.ps.map(renderPara)}</Fragment>)}</div>;
                 })}
                 {nextUnloaded >= 0 ? (
                   <div ref={scrollSentinelRef} style={{ textAlign: "center", padding: "24px 0", fontSize: 12, color: "var(--ink2)" }}>
@@ -871,7 +998,44 @@ export default function ReaderView({
                   ))}
                 </div>
               </>
-            ) : <Placeholder text="世界观百科会随阅读进度自动建条目并解锁。导入书功能开发中。" />)}
+            ) : (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  {(() => {
+                    const filled = !encData || encStale;
+                    const label = encState.loading ? "生成中…" : !encData ? "生成世界观百科" : encStale ? "更新到最新进度" : "重新生成";
+                    return (
+                      <button onClick={onGenEnc} disabled={encState.loading} style={{ cursor: encState.loading ? "default" : "pointer", fontFamily: "inherit", fontSize: 11, letterSpacing: 1, padding: "6px 12px", borderRadius: 8, border: "1px solid var(--acc)", background: filled ? "var(--acc)" : "transparent", color: filled ? "#FBF6EA" : "var(--acc)", opacity: encState.loading ? 0.6 : 1 }}>{label}</button>
+                    );
+                  })()}
+                  <span style={{ fontSize: 10, color: encStale ? "var(--acc)" : "var(--ink2)" }}>{encStale ? "已读到更新位置 · 可刷新" : encData ? "已缓存 · 读到 " + bookPct + "%" : "基于已读 " + bookPct + "%"}</span>
+                </div>
+                {encState.err && (
+                  <div style={{ marginBottom: 10, fontSize: 11, color: "var(--acc)", background: "var(--page)", border: "1px solid var(--line)", borderRadius: 8, padding: "8px 10px" }}>{encState.err}</div>
+                )}
+                {encData && encData.length ? (
+                  <>
+                    <div style={{ fontSize: 10, color: "var(--ink2)", marginBottom: 8, letterSpacing: 1 }}>只含你已读到的世界观词条 · 读得越多越完整</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {encData.map((e, i) => (
+                        <div key={i} style={{ background: "var(--page)", border: "1px solid var(--line)", borderRadius: 12, padding: "13px 14px" }}>
+                          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+                            <span style={{ fontFamily: "var(--font-mincho)", fontSize: 13.5, fontWeight: 600, color: "var(--ink)" }}>{e.name}</span>
+                            {e.category && <span style={{ fontSize: 9, color: "var(--acc)", border: "1px solid var(--acc)", borderRadius: 4, padding: "1px 6px", flex: "none" }}>{e.category}</span>}
+                          </div>
+                          <p style={{ margin: "6px 0 0 0", fontSize: 12, lineHeight: 1.85, color: "var(--ink)", opacity: 0.82 }}>{e.desc}</p>
+                          {e.first && <div style={{ marginTop: 6, fontSize: 9.5, color: "var(--ink2)" }}>初登场 · {e.first}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  !encState.loading && !encState.err && (
+                    <Placeholder text="点上方「生成世界观百科」，AI 会基于你已读到的位置整理地名、组织、设定等词条，不剧透。" />
+                  )
+                )}
+              </>
+            ))}
 
             {tab === "emo" && (isSample ? (
               <>
