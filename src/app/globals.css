@@ -81,3 +81,11 @@ body {
 *::-webkit-scrollbar-thumb:active {
   background-color: color-mix(in srgb, var(--ink2) 82%, transparent);
 }
+
+/* 正文阅读区（滚动模式）·方案 C：隐藏原生条，改用右缘悬浮进度丝（见 ReaderView）。 */
+.kr-reading {
+  scrollbar-width: none; /* Firefox */
+}
+.kr-reading::-webkit-scrollbar {
+  display: none;
+}

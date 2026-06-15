@@ -144,6 +144,7 @@ export default function ReaderView({
 
   // ── 阅读位置记忆（按 bookId 存 localStorage，翻页 / 滚动通用）──
   const scrollRef = useRef<HTMLDivElement>(null);
+  const readThumbRef = useRef<HTMLDivElement>(null); // 正文区悬浮进度丝（方案 C）
   const posKey = `kreader-pos-${meta.id}`;
   const restorePos = useRef<SavedPos | null>(null);
   const posReady = useRef(false); // 恢复完成或无需恢复后，才开始记录新位置
@@ -209,6 +210,42 @@ export default function ReaderView({
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => { el.removeEventListener("scroll", onScroll); if (t) clearTimeout(t); };
   }, [layout, posKey, chapters]);
+
+  // 滚动模式 · 正文区悬浮进度丝：滚动时浮现、停下淡出（隐藏原生条，方案 C）。
+  useEffect(() => {
+    if (layout !== "scroll") return;
+    const el = scrollRef.current;
+    const thumb = readThumbRef.current;
+    if (!el || !thumb) return;
+    let raf = 0;
+    let fade: ReturnType<typeof setTimeout> | null = null;
+    const paint = () => {
+      raf = 0;
+      const sh = el.scrollHeight, ch = el.clientHeight;
+      if (sh <= ch) { thumb.style.opacity = "0"; return; }
+      const h = Math.max(14, (ch / sh) * 100);
+      const top = (el.scrollTop / (sh - ch)) * (100 - h);
+      thumb.style.height = h + "%";
+      thumb.style.top = top + "%";
+    };
+    const onScroll = () => {
+      thumb.style.opacity = "0.85";
+      if (fade) clearTimeout(fade);
+      fade = setTimeout(() => { thumb.style.opacity = "0.32"; }, 800);
+      if (!raf) raf = requestAnimationFrame(paint);
+    };
+    thumb.style.opacity = "0.32";
+    paint();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const ro = new ResizeObserver(() => paint());
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+      if (fade) clearTimeout(fade);
+    };
+  }, [layout, chapterPages]);
 
   // ── 章节懒加载（导入书）──
   const loadChapter = useCallback(async (i: number) => {
@@ -867,20 +904,26 @@ export default function ReaderView({
               )}
             </div>
           ) : (
-            <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", position: "relative" }}>
-              <div style={{ maxWidth: 720, margin: "0 auto", padding: "44px 44px 72px 44px" }}>
-                {chapters.map((c) => {
-                  const pgs = chapterPages[c.index];
-                  if (!pgs) return null;
-                  return <div key={c.index} id={`kr-ch-${c.index}`}>{pgs.map((pg, k) => <Fragment key={k}>{renderHead(pg)}{pg.ps.map(renderPara)}</Fragment>)}</div>;
-                })}
-                {nextUnloaded >= 0 ? (
-                  <div ref={scrollSentinelRef} style={{ textAlign: "center", padding: "24px 0", fontSize: 12, color: "var(--ink2)" }}>
-                    {chapterErr ? <>加载失败：{chapterErr} <button onClick={() => loadChapter(nextUnloaded)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "3px 9px", borderRadius: 6, border: "1px solid var(--acc)", background: "transparent", color: "var(--acc)" }}>重试</button></> : "加载更多…"}
-                  </div>
-                ) : (
-                  <div style={{ textAlign: "center", marginTop: 8, fontFamily: "var(--font-mincho)", color: "var(--ink2)", fontSize: 13, letterSpacing: 6, opacity: 0.7 }}>✕ ✕ ✕</div>
-                )}
+            <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+              <div ref={scrollRef} className="kr-reading" style={{ position: "absolute", inset: 0, overflowY: "auto" }}>
+                <div style={{ maxWidth: 720, margin: "0 auto", padding: "44px 44px 72px 44px" }}>
+                  {chapters.map((c) => {
+                    const pgs = chapterPages[c.index];
+                    if (!pgs) return null;
+                    return <div key={c.index} id={`kr-ch-${c.index}`}>{pgs.map((pg, k) => <Fragment key={k}>{renderHead(pg)}{pg.ps.map(renderPara)}</Fragment>)}</div>;
+                  })}
+                  {nextUnloaded >= 0 ? (
+                    <div ref={scrollSentinelRef} style={{ textAlign: "center", padding: "24px 0", fontSize: 12, color: "var(--ink2)" }}>
+                      {chapterErr ? <>加载失败：{chapterErr} <button onClick={() => loadChapter(nextUnloaded)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "3px 9px", borderRadius: 6, border: "1px solid var(--acc)", background: "transparent", color: "var(--acc)" }}>重试</button></> : "加载更多…"}
+                    </div>
+                  ) : (
+                    <div style={{ textAlign: "center", marginTop: 8, fontFamily: "var(--font-mincho)", color: "var(--ink2)", fontSize: 13, letterSpacing: 6, opacity: 0.7 }}>✕ ✕ ✕</div>
+                  )}
+                </div>
+              </div>
+              {/* 方案 C · 正文区右缘悬浮进度丝（滚动时浮现、停下淡出） */}
+              <div style={{ position: "absolute", top: 10, bottom: 10, right: 5, width: 3, borderRadius: 999, background: "color-mix(in srgb, var(--ink2) 16%, transparent)", pointerEvents: "none", zIndex: 4 }}>
+                <div ref={readThumbRef} style={{ position: "absolute", left: 0, right: 0, top: 0, height: "20%", borderRadius: 999, background: "var(--acc)", opacity: 0.32, transition: "opacity 0.25s ease" }} />
               </div>
             </div>
           )}
