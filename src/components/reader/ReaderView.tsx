@@ -185,7 +185,7 @@ export default function ReaderView({
     try { window.localStorage.setItem(posKey, JSON.stringify({ chIdx, pi, scrollTop: 0 })); } catch { /* 配额满等忽略 */ }
   }, [chIdx, pi, layout, posKey]);
 
-  // 记录当前位置（滚动模式）：节流写入顶部可见章节与 scrollTop。
+  // 记录当前位置（滚动模式 · 单章）：节流写入当前章与章内 scrollTop。
   useEffect(() => {
     if (layout !== "scroll") return;
     const el = scrollRef.current;
@@ -197,19 +197,12 @@ export default function ReaderView({
       t = setTimeout(() => {
         const cont = scrollRef.current;
         if (!cont) return;
-        const top = cont.getBoundingClientRect().top;
-        let cur = 0;
-        for (const c of chapters) {
-          const node = document.getElementById(`kr-ch-${c.index}`);
-          if (!node) break; // 滚动模式按序加载，未加载的在末尾
-          if (node.getBoundingClientRect().top - top <= 100) cur = c.index; else break;
-        }
-        try { window.localStorage.setItem(posKey, JSON.stringify({ chIdx: cur, pi: 0, scrollTop: cont.scrollTop })); } catch { /* 忽略 */ }
+        try { window.localStorage.setItem(posKey, JSON.stringify({ chIdx, pi: 0, scrollTop: cont.scrollTop })); } catch { /* 忽略 */ }
       }, 300);
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => { el.removeEventListener("scroll", onScroll); if (t) clearTimeout(t); };
-  }, [layout, posKey, chapters]);
+  }, [layout, posKey, chIdx]);
 
   // 滚动模式 · 正文区悬浮进度丝：滚动时浮现、停下淡出（隐藏原生条，方案 C）。
   useEffect(() => {
@@ -286,19 +279,29 @@ export default function ReaderView({
       posReady.current = true;
       return;
     }
-    // 滚动模式：先把 0..chIdx 顺序加载齐，避免上方内容补入后位置跳动。
-    for (let i = 0; i <= rp.chIdx; i++) { if (!(i in chapterPages)) { loadChapter(i); return; } }
-    if (!scrollRef.current) return;
-    requestAnimationFrame(() => requestAnimationFrame(() => {
+    // 滚动模式（单章）：本章加载完后落位到上次的章内 scrollTop。
+    // 正文可能还没布局到位，直接设 scrollTop 会被浏览器夹到 0；轮询重试到生效或超时。
+    if (!(rp.chIdx in chapterPages)) { loadChapter(rp.chIdx); return; }
+    const target = rp.scrollTop;
+    let tries = 0;
+    const apply = () => {
       const el = scrollRef.current;
-      if (el) {
-        if (rp.scrollTop > 0) el.scrollTop = rp.scrollTop;
-        else if (rp.chIdx > 0) document.getElementById(`kr-ch-${rp.chIdx}`)?.scrollIntoView({ block: "start" });
+      if (el && target > 0) {
+        el.scrollTop = target;
+        if (Math.abs(el.scrollTop - target) > 1 && tries < 40) { tries++; setTimeout(apply, 50); return; }
       }
       restorePos.current = null;
       posReady.current = true;
-    }));
+    };
+    apply();
   }, [chapterPages, layout, loadChapter]);
+
+  // 滚动模式（单章）：切章后回到顶部（恢复历史位置时除外）。
+  useEffect(() => {
+    if (layout !== "scroll" || restorePos.current) return;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = 0;
+  }, [chIdx, layout]);
 
   const pages = useMemo(() => chapterPages[chIdx] ?? [], [chapterPages, chIdx]);
   const pagesReady = chIdx in chapterPages;
@@ -328,8 +331,14 @@ export default function ReaderView({
     if (chIdx > 0) { jumpEndRef.current = true; setChIdx(chIdx - 1); setPi(0); loadChapter(chIdx - 1); }
   }, [pi, cols, chIdx, loadChapter]);
 
-  // 导入书目录跳转
-  const goToChapter = useCallback((i: number) => { setWc(null); setChIdx(i); setPi(0); loadChapter(i); }, [loadChapter]);
+  // 导入书目录跳转（翻页模式切到该章首页；滚动模式切到该章并回到顶部）
+  const goToChapter = useCallback((i: number) => {
+    if (i < 0 || i >= chapters.length) return;
+    setWc(null); setChIdx(i); setPi(0); loadChapter(i);
+    if (layout === "scroll") requestAnimationFrame(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; });
+  }, [chapters.length, loadChapter, layout]);
+  const nextChapter = useCallback(() => goToChapter(chIdx + 1), [goToChapter, chIdx]);
+  const prevChapter = useCallback(() => goToChapter(chIdx - 1), [goToChapter, chIdx]);
   // 示例书目录跳转（跨页索引 → 页索引）
   const goToSampleSpread = useCallback((spread: number) => { setWc(null); setPi(spread * 2); }, []);
 
@@ -347,9 +356,13 @@ export default function ReaderView({
   // 已读段落数（到当前视图最后一页为止）与全书百分比。
   const visibleParas = useMemo(() => {
     let count = 0;
+    if (layout === "scroll") {
+      for (const pg of pages) count += pg.ps.length; // 单章滚动：整章视为已读窗口
+      return count;
+    }
     for (let k = 0; k <= pi + cols - 1 && k < pages.length; k++) count += pages[k].ps.length;
     return count;
-  }, [pages, pi, cols]);
+  }, [pages, pi, cols, layout]);
   const readParas = (chapterStart[chIdx] ?? 0) + visibleParas;
   const bookPct = totalParas ? Math.min(100, Math.max(0, Math.round((readParas / totalParas) * 100))) : 0;
   const curChapterTitle = chapters[chIdx]?.title ?? meta.chapterNo;
@@ -710,21 +723,6 @@ export default function ReaderView({
 
   const word = wc ? dict[wc.key] : null;
 
-  // 滚动模式下要懒加载的下一未加载章
-  const nextUnloaded = useMemo(() => {
-    for (const c of chapters) if (!(c.index in chapterPages)) return c.index;
-    return -1;
-  }, [chapters, chapterPages]);
-  const scrollSentinelRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (isSample || layout !== "scroll" || nextUnloaded < 0) return;
-    const el = scrollSentinelRef.current;
-    if (!el) return;
-    const io = new IntersectionObserver((entries) => { if (entries[0].isIntersecting) loadChapter(nextUnloaded); });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [isSample, layout, nextUnloaded, loadChapter]);
-
   return (
     <div style={{ ...rootVars, height: "100vh", display: "flex", flexDirection: "column", background: "var(--app)", fontFamily: "var(--font-serif)", overflow: "hidden" }}>
       {/* 顶栏 */}
@@ -907,17 +905,21 @@ export default function ReaderView({
             <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
               <div ref={scrollRef} className="kr-reading" style={{ position: "absolute", inset: 0, overflowY: "auto" }}>
                 <div style={{ maxWidth: 720, margin: "0 auto", padding: "44px 44px 72px 44px" }}>
-                  {chapters.map((c) => {
-                    const pgs = chapterPages[c.index];
-                    if (!pgs) return null;
-                    return <div key={c.index} id={`kr-ch-${c.index}`}>{pgs.map((pg, k) => <Fragment key={k}>{renderHead(pg)}{pg.ps.map(renderPara)}</Fragment>)}</div>;
-                  })}
-                  {nextUnloaded >= 0 ? (
-                    <div ref={scrollSentinelRef} style={{ textAlign: "center", padding: "24px 0", fontSize: 12, color: "var(--ink2)" }}>
-                      {chapterErr ? <>加载失败：{chapterErr} <button onClick={() => loadChapter(nextUnloaded)} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "3px 9px", borderRadius: 6, border: "1px solid var(--acc)", background: "transparent", color: "var(--acc)" }}>重试</button></> : "加载更多…"}
+                  {!pagesReady ? (
+                    <div style={{ textAlign: "center", padding: "72px 0", color: "var(--ink2)" }}>
+                      <div style={{ fontFamily: "var(--font-mincho)", fontSize: 15 }}>正在加载本章…</div>
+                      {chapterErr && <div style={{ marginTop: 10, fontSize: 12, color: "var(--acc)" }}>加载失败：{chapterErr}<button onClick={() => loadChapter(chIdx)} style={{ marginLeft: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: "3px 9px", borderRadius: 6, border: "1px solid var(--acc)", background: "transparent", color: "var(--acc)" }}>重试</button></div>}
                     </div>
                   ) : (
-                    <div style={{ textAlign: "center", marginTop: 8, fontFamily: "var(--font-mincho)", color: "var(--ink2)", fontSize: 13, letterSpacing: 6, opacity: 0.7 }}>✕ ✕ ✕</div>
+                    <div id={`kr-ch-${chIdx}`}>
+                      {pages.map((pg, k) => <Fragment key={k}>{renderHead(pg)}{pg.ps.map(renderPara)}</Fragment>)}
+                      {/* 章末 · 上/下一章导航（按目录分章，不再一页到底） */}
+                      <div style={{ marginTop: 44, paddingTop: 22, borderTop: "1px solid var(--line)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                        <button onClick={prevChapter} disabled={chIdx === 0} style={{ cursor: chIdx === 0 ? "default" : "pointer", fontFamily: "inherit", fontSize: 12, letterSpacing: 1, padding: "8px 16px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--page)", color: "var(--ink)", opacity: chIdx === 0 ? 0.4 : 1 }}>‹ 上一章</button>
+                        <span style={{ fontSize: 11, color: "var(--ink2)", fontVariantNumeric: "tabular-nums" }}>第 {chIdx + 1}/{chapters.length} 章</span>
+                        <button onClick={nextChapter} disabled={chIdx >= chapters.length - 1} style={{ cursor: chIdx >= chapters.length - 1 ? "default" : "pointer", fontFamily: "inherit", fontSize: 12, letterSpacing: 1, padding: "8px 16px", borderRadius: 8, border: `1px solid ${chIdx >= chapters.length - 1 ? "var(--line)" : "var(--acc)"}`, background: chIdx >= chapters.length - 1 ? "var(--page)" : "var(--acc)", color: chIdx >= chapters.length - 1 ? "var(--ink)" : "#FBF6EA", opacity: chIdx >= chapters.length - 1 ? 0.4 : 1 }}>下一章 ›</button>
+                      </div>
+                    </div>
                   )}
                 </div>
               </div>
