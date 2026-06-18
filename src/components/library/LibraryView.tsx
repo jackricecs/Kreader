@@ -58,6 +58,12 @@ export default function LibraryView({ books }: { books: ShelfBook[] }) {
 
   const navigable = (b: ShelfBook) => b.cur || b.imported;
 
+  // 继续阅读：取最近一本「在读」的书；没有则不展示该卡片。
+  const current = useMemo(
+    () => books.find((b) => b.prog > 0 && b.prog < 100) ?? null,
+    [books]
+  );
+
   return (
     <div
       data-theme="paper"
@@ -94,36 +100,32 @@ export default function LibraryView({ books }: { books: ShelfBook[] }) {
       <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
         <div style={{ maxWidth: 1180, margin: "0 auto", padding: "28px 40px 48px 40px" }}>
           {/* 继续阅读 */}
+          {current && (
           <div style={{ background: "var(--page)", border: "1px solid var(--line)", borderRadius: 14, padding: 22, display: "flex", gap: 26, boxShadow: "0 14px 36px -18px rgba(50,35,15,0.3)" }}>
-            <Link href="/read/ginga" title="打开《銀河鉄道の夜》" style={{ width: 134, height: 200, flex: "none", borderRadius: 6, background: "linear-gradient(160deg,#27354F,#101723)", boxShadow: "0 10px 22px -8px rgba(30,30,50,0.55)", display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "14px 12px", textDecoration: "none" }}>
-              <span style={{ writingMode: "vertical-rl", fontFamily: "var(--font-mincho)", fontSize: 15, color: "#EDE7D4", letterSpacing: 4, alignSelf: "flex-end" }}>銀河鉄道の夜</span>
-              <span style={{ fontSize: 9.5, color: "rgba(237,231,212,0.65)" }}>宮沢賢治</span>
+            <Link href={`/read/${current.id}`} title={`打开《${current.title}》`} style={{ width: 134, height: 200, flex: "none", borderRadius: 6, background: current.grad, boxShadow: "0 10px 22px -8px rgba(30,30,50,0.55)", display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "14px 12px", textDecoration: "none" }}>
+              <span style={{ writingMode: "vertical-rl", fontFamily: "var(--font-mincho)", fontSize: 15, color: "#EDE7D4", letterSpacing: 4, alignSelf: "flex-end", maxHeight: "75%", overflow: "hidden" }}>{current.title}</span>
+              <span style={{ fontSize: 9.5, color: "rgba(237,231,212,0.65)" }}>{current.author}</span>
             </Link>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 3, color: "var(--acc)" }}>继续阅读</div>
               <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
-                <span style={{ fontFamily: "var(--font-mincho)", fontSize: 22, fontWeight: 600, color: "var(--ink)" }}>銀河鉄道の夜</span>
-                <span style={{ fontSize: 12, color: "var(--ink2)" }}>宮沢賢治</span>
-                <span style={{ fontSize: 9, letterSpacing: 1, padding: "2px 7px", borderRadius: 4, background: "var(--soft)", border: "1px solid var(--line)", color: "var(--ink2)" }}>EPUB · 日文</span>
+                <span style={{ fontFamily: "var(--font-mincho)", fontSize: 22, fontWeight: 600, color: "var(--ink)" }}>{current.title}</span>
+                <span style={{ fontSize: 12, color: "var(--ink2)" }}>{current.author}</span>
+                <span style={{ fontSize: 9, letterSpacing: 1, padding: "2px 7px", borderRadius: 4, background: "var(--soft)", border: "1px solid var(--line)", color: "var(--ink2)" }}>{current.fmt} · {current.lang}</span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14 }}>
                 <div style={{ width: 240, height: 3, borderRadius: 99, background: "var(--line)", position: "relative" }}>
-                  <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "5%", borderRadius: 99, background: "var(--acc)" }} />
+                  <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${current.prog}%`, borderRadius: 99, background: "var(--acc)" }} />
                 </div>
-                <span style={{ fontSize: 11, color: "var(--ink2)" }}>全书 5% · 第一章《午後の授業》38%</span>
-              </div>
-              <p style={{ margin: "12px 0 0 0", fontSize: 12.5, lineHeight: 1.95, color: "var(--ink2)", maxWidth: 560 }}>上回说到：银河课堂上，老师问「这白蒙蒙的银河究竟是什么」——被点名的乔班尼与康帕内拉都沉默了，扎内利在一旁嗤笑。</p>
-              <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
-                {["生词本 8 词", "人物图谱 4 +1", "百科词条 2 / 5"].map((t) => (
-                  <span key={t} style={{ fontSize: 10, color: "var(--ink2)", background: "var(--soft)", border: "1px solid var(--line)", borderRadius: 4, padding: "2px 8px" }}>{t}</span>
-                ))}
+                <span style={{ fontSize: 11, color: "var(--ink2)" }}>全书 {current.prog}%</span>
               </div>
               <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-                <Link href="/read/ginga" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, letterSpacing: 2, padding: "9px 24px", borderRadius: 9, border: "none", background: "var(--acc)", color: "#FBF6EA", textDecoration: "none" }}>继续阅读</Link>
-                <Link href="/read/ginga?tab=recap" style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, letterSpacing: 2, padding: "9px 18px", borderRadius: 9, border: "1px solid var(--acc)", background: "transparent", color: "var(--acc)", textDecoration: "none" }}>前情提要</Link>
+                <Link href={`/read/${current.id}`} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, letterSpacing: 2, padding: "9px 24px", borderRadius: 9, border: "none", background: "var(--acc)", color: "#FBF6EA", textDecoration: "none" }}>继续阅读</Link>
+                <Link href={`/read/${current.id}?tab=recap`} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, letterSpacing: 2, padding: "9px 18px", borderRadius: 9, border: "1px solid var(--acc)", background: "transparent", color: "var(--acc)", textDecoration: "none" }}>前情提要</Link>
               </div>
             </div>
           </div>
+          )}
 
           {/* 书架 */}
           <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "32px 0 16px 0", flexWrap: "wrap" }}>
@@ -140,7 +142,7 @@ export default function LibraryView({ books }: { books: ShelfBook[] }) {
             <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--ink2)" }}>按最近阅读排序</span>
           </div>
 
-          {shown.length === 0 && (
+          {shown.length === 0 && (q.trim() || filter !== "all") && (
             <div style={{ border: "1px dashed var(--line)", borderRadius: 12, padding: 36, textAlign: "center", fontSize: 12, color: "var(--ink2)" }}>没有匹配的书。换个关键词，或清空筛选。</div>
           )}
 

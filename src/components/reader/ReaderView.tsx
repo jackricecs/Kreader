@@ -131,6 +131,7 @@ export default function ReaderView({
   const [saved, setSaved] = useState<Record<string, boolean>>({});
   const [vocabCount, setVocabCount] = useState(8);
   const [layout, setLayout] = useState<"page" | "scroll">("scroll"); // 默认滚动模式
+  const [maxRead, setMaxRead] = useState(0); // 已读最远段落数（高水位）：驱动书架进度 + 防剧透 AI 上界
 
   // 已加载章节的页与段落（示例书初始即全量）。
   const [chapterPages, setChapterPages] = useState<Record<number, SpreadSide[]>>(
@@ -144,6 +145,7 @@ export default function ReaderView({
 
   // ── 阅读位置记忆（按 bookId 存 localStorage，翻页 / 滚动通用）──
   const scrollRef = useRef<HTMLDivElement>(null);
+  const draggedRef = useRef(false); // 刚发生拖拽滚动 → 抑制随后的 click（避免误触译文 / 查词）
   const readThumbRef = useRef<HTMLDivElement>(null); // 正文区悬浮进度丝（方案 C）
   const posKey = `kreader-pos-${meta.id}`;
   const restorePos = useRef<SavedPos | null>(null);
@@ -237,6 +239,53 @@ export default function ReaderView({
       ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
       if (fade) clearTimeout(fade);
+    };
+  }, [layout, chapterPages]);
+
+  // 滚动模式：按住正文拖拽滚动（同向 —— 向下拖 = 继续往下看，略带加速）。
+  // 与点击译文 / 查词共存：超过阈值才算拖拽，拖拽后抑制随之而来的 click。
+  useEffect(() => {
+    if (layout !== "scroll") return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const SPEED = 1.6;   // 拖拽位移 → 滚动距离倍率，手感更"快"
+    const THRESH = 6;    // 超过该位移才进入拖拽，避免误伤点击
+    let down = false, dragging = false, startY = 0, startTop = 0;
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      // 不拦截按钮 / 链接等可交互控件
+      if ((e.target as HTMLElement).closest("button,a,input,textarea")) return;
+      down = true; dragging = false; startY = e.clientY; startTop = el.scrollTop;
+    };
+    const onMove = (e: MouseEvent) => {
+      if (!down) return;
+      const dy = e.clientY - startY;
+      if (!dragging) {
+        if (Math.abs(dy) < THRESH) return;
+        dragging = true;
+        el.style.cursor = "grabbing";
+        el.style.userSelect = "none";
+      }
+      e.preventDefault(); // 抑制原生文本选择
+      el.scrollTop = startTop + dy * SPEED;
+    };
+    const onUp = () => {
+      if (!down) return;
+      down = false;
+      if (dragging) {
+        draggedRef.current = true; // 抑制随后的 click
+        el.style.cursor = "";
+        el.style.userSelect = "";
+        setTimeout(() => { draggedRef.current = false; }, 0);
+      }
+    };
+    el.addEventListener("mousedown", onDown);
+    window.addEventListener("mousemove", onMove, { passive: false });
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      el.removeEventListener("mousedown", onDown);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
     };
   }, [layout, chapterPages]);
 
@@ -367,6 +416,41 @@ export default function ReaderView({
   const bookPct = totalParas ? Math.min(100, Math.max(0, Math.round((readParas / totalParas) * 100))) : 0;
   const curChapterTitle = chapters[chIdx]?.title ?? meta.chapterNo;
 
+  // 已读高水位（只增不减）：当前读到的位置推高 maxRead。
+  // effectiveRead 同时驱动书架进度与防剧透 AI 上界 —— 回看前文不会让已生成的 AI 内容被判为剧透而隐藏。
+  useEffect(() => { setMaxRead((m) => Math.max(m, readParas)); }, [readParas]);
+  const effectiveRead = Math.max(maxRead, readParas);
+
+  // 进入时从 DB 读历史进度（仅导入书）作为高水位起点：恢复书架进度与 AI 上界。
+  useEffect(() => {
+    if (isSample) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/books/${meta.id}/progress`);
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled && res.ok && typeof data.paragraphIdx === "number") {
+          setMaxRead((m) => Math.max(m, data.paragraphIdx));
+        }
+      } catch { /* 离线 / 失败忽略 */ }
+    })();
+    return () => { cancelled = true; };
+  }, [isSample, meta.id]);
+
+  // 进度写回 DB（仅导入书，防抖）：驱动书架百分比 / 继续阅读，并稳定防剧透上界。
+  useEffect(() => {
+    if (isSample || maxRead <= 0) return;
+    const pct = totalParas ? Math.min(100, Math.round((maxRead / totalParas) * 100)) : 0;
+    const t = setTimeout(() => {
+      fetch(`/api/books/${meta.id}/progress`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paragraphIdx: maxRead, percent: pct }),
+      }).catch(() => { /* 失败忽略，下次再写 */ });
+    }, 800);
+    return () => clearTimeout(t);
+  }, [isSample, maxRead, totalParas, meta.id]);
+
   // TXT 等单章导入书：AI 智能分章后刷新页面重新分章。
   const onAutoChapter = useCallback(async () => {
     setChaptering(true);
@@ -473,13 +557,13 @@ export default function ReaderView({
       for (let k = 0; k <= pi + cols - 1 && k < pages.length; k++) ids.push(...pages[k].ps);
       return ids.map((id) => parasStore[id]?.segs.map((s) => s.t).join("")).filter(Boolean).join("\n");
     }
-    const upto = readParas - 1;
+    const upto = effectiveRead - 1;
     if (upto < 0) return "";
     const res = await fetch(`/api/books/${meta.id}/context?upto=${upto}`);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.error ?? "读取已读上下文失败");
     return (data.text as string) ?? "";
-  }, [isSample, pi, cols, pages, parasStore, readParas, meta.id]);
+  }, [isSample, pi, cols, pages, parasStore, effectiveRead, meta.id]);
 
   async function streamInto(url: string, body: object, set: (s: TState) => void) {
     set({ loading: true, text: "" });
@@ -514,12 +598,12 @@ export default function ReaderView({
   // 前情提要（带按进度缓存）。force=true 跳过缓存重新生成。
   const [recapUpto, setRecapUpto] = useState<number | null>(null);
   const [recapCached, setRecapCached] = useState(false);
-  const recapStale = !!recapLive?.text && !recapLive.loading && recapUpto != null && readParas - 1 > recapUpto;
+  const recapStale = !!recapLive?.text && !recapLive.loading && recapUpto != null && effectiveRead - 1 > recapUpto;
   const onRecap = async (force = false) => {
     setRecapLive({ loading: true, text: "" });
     setRecapCached(false);
     try {
-      const upto = readParas - 1;
+      const upto = effectiveRead - 1;
       const body = isSample || upto < 0 ? { readContext: await getReadContext() } : { bookId: meta.id, upto, force };
       const res = await fetch("/api/ai/recap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const rawUpto = res.headers.get("X-Recap-Upto");
@@ -547,15 +631,16 @@ export default function ReaderView({
   const [graphUpto, setGraphUpto] = useState<number | null>(null); // 当前图谱基于的已读段落上界
   const [graphState, setGraphState] = useState<{ loading: boolean; err: string | null }>({ loading: false, err: null });
   // 读得比图谱生成位置更远 → 标记「可更新」，由用户决定是否花 token 重算。
-  const graphStale = graph != null && graphUpto != null && readParas - 1 > graphUpto;
+  const graphStale = graph != null && graphUpto != null && effectiveRead - 1 > graphUpto;
 
   // 进入「人物」Tab 且内存无图谱时，先尝试命中服务端缓存（不调用模型）。
-  const graphCacheTried = useRef(false);
+  // 记录上次尝试的 upto：高水位回填或继续阅读推高 upto 后会重试，避免缓存因首次 upto 偏小被永久跳过。
+  const graphCacheTried = useRef(-1);
   useEffect(() => {
     if (isSample || tab !== "chars" || graph || graphState.loading) return;
-    const upto = readParas - 1;
-    if (upto < 0 || graphCacheTried.current) return;
-    graphCacheTried.current = true;
+    const upto = effectiveRead - 1;
+    if (upto < 0 || upto <= graphCacheTried.current) return;
+    graphCacheTried.current = upto;
     let cancelled = false;
     (async () => {
       try {
@@ -570,12 +655,12 @@ export default function ReaderView({
       }
     })();
     return () => { cancelled = true; };
-  }, [isSample, tab, graph, graphState.loading, readParas, meta.id]);
+  }, [isSample, tab, graph, graphState.loading, effectiveRead, meta.id]);
 
   const onGenGraph = async () => {
     setGraphState({ loading: true, err: null });
     try {
-      const upto = readParas - 1;
+      const upto = effectiveRead - 1;
       if (isSample || upto < 0) { setGraphState({ loading: false, err: "还没读到正文，先往下读一点再生成" }); return; }
       const res = await fetch("/api/ai/chargraph", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bookId: meta.id, upto }) });
       const data = await res.json().catch(() => ({}));
@@ -604,15 +689,15 @@ export default function ReaderView({
   const [encData, setEncData] = useState<EncItem[] | null>(null);
   const [encUpto, setEncUpto] = useState<number | null>(null); // 当前百科基于的已读段落上界
   const [encState, setEncState] = useState<{ loading: boolean; err: string | null }>({ loading: false, err: null });
-  const encStale = encData != null && encUpto != null && readParas - 1 > encUpto;
+  const encStale = encData != null && encUpto != null && effectiveRead - 1 > encUpto;
 
   // 进入「百科」Tab 且内存无数据时，先尝试命中服务端缓存（不调用模型）。
-  const encCacheTried = useRef(false);
+  const encCacheTried = useRef(-1);
   useEffect(() => {
     if (isSample || tab !== "enc" || encData || encState.loading) return;
-    const upto = readParas - 1;
-    if (upto < 0 || encCacheTried.current) return;
-    encCacheTried.current = true;
+    const upto = effectiveRead - 1;
+    if (upto < 0 || upto <= encCacheTried.current) return;
+    encCacheTried.current = upto;
     let cancelled = false;
     (async () => {
       try {
@@ -624,12 +709,12 @@ export default function ReaderView({
       } catch { /* 缓存读取失败不打扰用户，按钮仍可手动生成 */ }
     })();
     return () => { cancelled = true; };
-  }, [isSample, tab, encData, encState.loading, readParas, meta.id]);
+  }, [isSample, tab, encData, encState.loading, effectiveRead, meta.id]);
 
   const onGenEnc = async () => {
     setEncState({ loading: true, err: null });
     try {
-      const upto = readParas - 1;
+      const upto = effectiveRead - 1;
       if (isSample || upto < 0) { setEncState({ loading: false, err: "还没读到正文，先往下读一点再生成" }); return; }
       const res = await fetch("/api/ai/encyclopedia", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bookId: meta.id, upto }) });
       const data = await res.json().catch(() => ({}));
@@ -903,7 +988,7 @@ export default function ReaderView({
             </div>
           ) : (
             <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-              <div ref={scrollRef} className="kr-reading" style={{ position: "absolute", inset: 0, overflowY: "auto" }}>
+              <div ref={scrollRef} className="kr-reading" onClickCapture={(e) => { if (draggedRef.current) { e.stopPropagation(); e.preventDefault(); } }} style={{ position: "absolute", inset: 0, overflowY: "auto" }}>
                 <div style={{ maxWidth: 720, margin: "0 auto", padding: "44px 44px 72px 44px" }}>
                   {!pagesReady ? (
                     <div style={{ textAlign: "center", padding: "72px 0", color: "var(--ink2)" }}>

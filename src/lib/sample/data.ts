@@ -109,10 +109,8 @@ export const GINGA: BookContent = {
   recap: "银河课堂上，老师指着星座图问大家：「这白蒙蒙的银河究竟是什么？」康帕内拉第一个举手，乔班尼却没敢举——明明他在杂志上读到过答案。被点名的两人都答不上来，扎内利在一旁嗤笑。老师只好自己揭晓：银河用大望远镜看去，是无数颗小小的星星。",
 };
 
-// 书架展示书目：仅保留有完整内容、可真正打开阅读的示例书。
-// 其余仅作封面演示、点开为空的占位书已移除——真实书目来自「导入书籍」。
-export const SHELF_BOOKS: ShelfBook[] = [
-  { id: "ginga", title: "銀河鉄道の夜", author: "宮沢賢治", lang: "日文", fmt: "EPUB", prog: 5, grad: "linear-gradient(160deg,#27354F,#101723)", cur: true },
-];
+// 书架展示书目：默认空，纯净界面。真实书目来自「导入书籍」。
+// 示例书 GINGA 仍保留在本文件中（可按 id "ginga" 引用），仅不再默认上架。
+export const SHELF_BOOKS: ShelfBook[] = [];
 
-export const BOOK_CONTENTS: Record<string, BookContent> = { ginga: GINGA };
+export const BOOK_CONTENTS: Record<string, BookContent> = {};
